@@ -9,22 +9,35 @@ sub pipeline_wide_parameters {
     my ($self) = @_;
     return {
         %{ $self->SUPER::pipeline_wide_parameters },
-        samtools     => $self->o('samtools'),
-        bowtie       => $self->o('bowtie'),
-        bedtools     => $self->o('bedtools'),
-        fasta_suffix => $self->o('fasta_suffix'),
+        samtools         => $self->o('samtools'),
+        bowtie           => $self->o('bowtie'),
+        bedtools         => $self->o('bedtools'),
+        fasta_suffix     => $self->o('fasta_suffix'),
+        bedGraphToBigWig => $self->o('bedGraphToBigWig'),
+
     };
 }
 
 sub default_options {
     my ($self) = @_;
     return {
-        %{ $self->SUPER::default_options() }, # inherit other stuff from the base class
+        %{ $self->SUPER::default_options() }
+        ,    # inherit other stuff from the base class
 
         # name used by the beekeeper to prefix job names on the farm
         'pipeline_name' => 'mappability',
-        # suffix used when looking for fasta files    
-        'fasta_suffix' => 'fa',    
+
+        # suffix used when looking for fasta files
+        'fasta_suffix' => 'fa',
+
+        # slurp whole fasta file into memory before making kmers
+        'slurp_fasta' => 1,
+
+        # maximum number of kmers to write into a batch for bowtie
+        'kmer_split_limit' => 50000000,
+
+        # gzip kmer files
+        'gzip_kmer_files' => 1,
     };
 }
 
@@ -32,28 +45,45 @@ sub pipeline_analyses {
     my ($self) = @_;
     return [
         {
-            -logic_name  => 'start',
-            -module      => 'Bio::EnsEMBL::Hive::RunnableDB::JobFactory',
-            -parameters  => {
-                inputlist    => '#expr( [eval(#kmer_sizes#)] )expr#',
-                column_names => ['kmer_length'],
-            },
+            -logic_name => 'start',
+            -module     => 'Bio::GenomeSignalTracks::Process::MappabilityPreFlightChecks',
             -flow_into => {
-                '2' => {
-                    'make_output_dir' => {
+                '1' => {
+                    'kmer_factory' => {
                         output_dir => '#output_dir#',
-                        kmer_size  => '#kmer_length#',
+                        kmer_sizes => '#kmer_sizes#',
                         fasta_dir  => '#fasta_dir#',
                         index_dir  => '#index_dir#',
                         index_name => '#index_name#',
+                        chrom_list => '#chrom_list#',
                     },
                 },
             },
         },
         {
-            -logic_name  => 'make_output_dir',
-            -module      => 'Bio::EnsEMBL::Hive::RunnableDB::SystemCmd',
-            -parameters  => {
+            -logic_name => 'kmer_factory',
+            -module     => 'Bio::EnsEMBL::Hive::RunnableDB::JobFactory',
+            -parameters => {
+                inputlist    => '#expr( [eval(#kmer_sizes#)] )expr#',
+                column_names => ['kmer_size'],
+            },
+            -flow_into => {
+                '2' => {
+                    'make_output_dir' => {
+                        output_dir => '#output_dir#',
+                        kmer_size  => '#kmer_size#',
+                        fasta_dir  => '#fasta_dir#',
+                        index_dir  => '#index_dir#',
+                        index_name => '#index_name#',
+                        chrom_list => '#chrom_list#',
+                    },
+                },
+            },
+        },
+        {
+            -logic_name => 'make_output_dir',
+            -module     => 'Bio::EnsEMBL::Hive::RunnableDB::SystemCmd',
+            -parameters => {
                 kmer_out_dir => '#output_dir#/#index_name#/k#kmer_size#',
                 cmd          => 'mkdir -p #kmer_out_dir#',
             },
@@ -72,14 +102,15 @@ sub pipeline_analyses {
                         output_dir => '#output_dir#',
                         name       => '#index_name#.k#kmer_size#',
                         kmer_size  => '#kmer_size#',
+                        chrom_list => '#chrom_list#',
                     }
                 }
             }
         },
         {
-            -logic_name  => 'fasta_factory',
-            -module      => 'Bio::EnsEMBL::Hive::RunnableDB::JobFactory',
-            -parameters  => {
+            -logic_name => 'fasta_factory',
+            -module     => 'Bio::EnsEMBL::Hive::RunnableDB::JobFactory',
+            -parameters => {
                 inputcmd => 'find #fasta_dir# -type f -name "*.#fasta_suffix#"',
                 column_names => ['filename'],
             },
@@ -100,9 +131,9 @@ sub pipeline_analyses {
             -logic_name => 'fasta_kmers_factory',
             -module => 'Bio::GenomeSignalTracks::Process::FastaKmerSplitter',
             -parameters => {
-                gzip        => 1,
-                split_limit => 50000000,
-                slurp       => 1,
+                gzip        => $self->o('gzip_kmer_files'),
+                split_limit => $self->o('kmer_split_limit'),
+                slurp       => $self->o('slurp_fasta'),
             },
             -rc_name   => '2Gb_job',
             -flow_into => {
@@ -157,7 +188,7 @@ sub pipeline_analyses {
         {
             -logic_name => 'bam_merge',
             -module     => 'Bio::EnsEMBL::Hive::RunnableDB::SystemCmd',
-            -rc_name   => '2Gb_job',
+            -rc_name    => '2Gb_job',
             -parameters => {
                 bam => '#output_dir#/#name#.bam',
                 cmd =>
@@ -170,6 +201,7 @@ sub pipeline_analyses {
                         kmer_size  => '#kmer_size#',
                         name       => '#name#',
                         output_dir => '#output_dir#',
+                        chrom_list => '#chrom_list#',
                     },
                     'rm_file' =>
                       { 'file' => '#expr(join(" ",@{#sorted_bam#}))expr#' }
@@ -178,6 +210,7 @@ sub pipeline_analyses {
         },
         {
             -logic_name => 'bam2bg',
+            -rc_name    => '3Gb_job',
             -module     => 'Bio::EnsEMBL::Hive::RunnableDB::SystemCmd',
             -parameters => {
                 scaling_factor => '#expr( 1/#kmer_size# )expr#',
@@ -185,9 +218,28 @@ sub pipeline_analyses {
                 cmd =>
 '#bedtools# genomecov -ibam #bam# -bg -scale #scaling_factor# > #bedgraph#',
             },
-            -flow_into => { 1 => { 'rm_file' => { file => '#bam#' } } }
+            -flow_into => {
+                1 => {
+                    'rm_file'          => { file => '#bam#' },
+                    'bedGraphToBigWig' => {
+                        name       => '#name#',
+                        bedgraph   => '#bedgraph#',
+                        output_dir => '#output_dir#',
+                        chrom_list => '#chrom_list#',
+                    }
+                }
+            }
         },
-
+        {
+            -logic_name => 'bedGraphToBigWig',
+            -rc_name    => '2Gb_job',
+            -module     => 'Bio::EnsEMBL::Hive::RunnableDB::SystemCmd',
+            -parameters => {
+                bigwig => '#output_dir#/#name#.bw',
+                cmd => '#bedGraphToBigWig# #bedgraph# #chrom_list# #bigwig# ',
+            },
+            -flow_into => { 1 => { 'rm_file' => { file => '#bedgraph#' } } }
+        },
     ];
 }
 

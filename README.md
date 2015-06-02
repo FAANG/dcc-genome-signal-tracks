@@ -7,7 +7,7 @@ This repo provides tools for creating
 
 ## Mappability file generation
 
-Create mappability tracks for a reference genome, at specific kmer lengths. Mappability is based on unique, exact matches.
+Create mappability tracks for a reference genome, at specific kmer lengths. Mappability is based on unique, exact matches. It is inspired by the mappability pipeline created by Anshul Kundaje for [align2rawsignal](https://code.google.com/p/align2rawsignal/)
 
 ### Requirements
 
@@ -22,8 +22,7 @@ Create mappability tracks for a reference genome, at specific kmer lengths. Mapp
 1. Additional perl module dependencies - please see cpanfile in the root of the repository. If you have cpanm, you can install them with `cpanm --installdeps .` 
 1.  A reference genome, split into fasta files. One chromosome/contig per file works well, as the each file is loaded into memory by default. The eHive pipeline is tested to work with chromsomes up to the size of human chr1.
 1. A bowtie index file for the reference genome
-1. A chrom sizes file for use with bedGraphToBigWig - 2 column, tab-separated  text file, listing the reference sequence names and lengths. This can be created from the bowtie index: `bowtie-inspect -s index_name | awk 'BEGIN{OFS="\t"}{print $2,substr($5,4)}' > chrom.list`
-
+1. A chrom sizes file for use with bedGraphToBigWig - 2 column, tab-separated  text file, listing the reference sequence names and lengths. 
 
 ### Installation
 
@@ -33,7 +32,7 @@ Create mappability tracks for a reference genome, at specific kmer lengths. Mapp
 
 ### Usage
 
-1. First, initialise the hive pipeline and tell it where to find software:
+1. First, initialise the hive pipeline and tell it where to find the software it depends upon:
 ```
 ensembl-hive/scripts/init_pipeline.pl Bio::GenomeSignalTracks::PipeConfig::MappabilityConf \
 	-hive_driver mysql \
@@ -44,6 +43,7 @@ ensembl-hive/scripts/init_pipeline.pl Bio::GenomeSignalTracks::PipeConfig::Mappa
 	-bedtools /path/to/bedtools \
 	-samtools /path/to/samtools \
 	-bowtie /path/to/bowtie \
+	-bedGraphToBigWig /path/to/bedGraphToBigWig \
 	-fasta_suffix fa
 ```
 The paths to bedtools, samtool and bowtie are required. The fasta suffix is used when searching for fasta files and defaults to fa (i.e. it will look for files matching *.fa). 
@@ -55,13 +55,14 @@ Running init_pipeline.pl successfully will provide you with a database URL to us
 ensembl-hive/scripts/seed_pipeline.pl \
 	-url mysql://username:password@host:port/dbname \
 	-logic_name start \
-	-input_id "{fasta_dir => '/path/to/fasta/', output_dir => '/path/to/output', kmer_sizes => '35,42,90..100', index_dir => '/path/to/bowtie_index', index_name => 'name_of_index'}"
+	-input_id "{fasta_dir => '/path/to/fasta/', output_dir => '/path/to/output', kmer_sizes => '35,42,90..100', index_dir => '/path/to/bowtie_index', index_name => 'name_of_index', chrom_list => '/path/to/chrom_list'}"
 ```
  * __fasta\_dir__ should be a directory containing fasta files  (matching the fasta suffix supplied in step 1).
  * __output\_dir__ is the directory where output files will be created. Working directories for each kmer length will also be creted here
  * __kmer\_size__ a list of kmer lengths to use. These should match the read lengths you expect to work with. This can include lists of values or ranges, so '35,45..50', would cause the pipeline to run for kmer lengths 35,45,45,47,48,49,50.
  * __index\_dir__ should be the directory containing the bowtie index
  * __index\_name__ should be the base name of the bowtie index, located in index\_dir
+ * __chrom\_list___ should be a tab separated file listing the sequences in the reference genome, and their length
  
 3. Run hive. The controller script (beekeeper) may be running for many hours, and should be run under [gnu screen](http://www.gnu.org/software/screen/) or similar.
 ```
