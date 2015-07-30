@@ -5,9 +5,8 @@ use warnings;
 use base ('Bio::EnsEMBL::Hive::Process');
 
 use autodie;
-use IO::Uncompress::AnyUncompress qw($AnyUncompressError);
+use PerlIO::gzip;
 use Bio::GenomeSignalTracks::Util::TieFileHandleLineSplit;
-use Bio::GenomeSignalTracks::Util::SlurpFastaKmerWriter;
 use Bio::GenomeSignalTracks::Util::FastaKmerWriter;
 
 sub fetch_input {
@@ -18,7 +17,6 @@ sub fetch_input {
     my $output_dir  = $self->param_required('output_dir');
     my $split_limit = $self->param_required('split_limit');
     my $gzip_output = $self->param('gzip');
-    my $slurp       = $self->param('slurp');
 }
 
 sub write_output {
@@ -29,27 +27,21 @@ sub write_output {
     my $output_dir  = $self->param_required('output_dir');
     my $split_limit = $self->param_required('split_limit');
     my $gzip_output = $self->param('gzip');
-    my $slurp       = $self->param('slurp');
 
     my $in_fh;
 
+    $self->dbc and $self->dbc->disconnect_when_inactive(1);
+
     if ( $fasta_file =~ m/\.gz$/ ) {
-        $in_fh = IO::Uncompress::AnyUncompress->new($fasta_file)
-          or die "anyuncompress failed: $AnyUncompressError\n";
+        open( $in_fh, '<:gzip', $fasta_file );
     }
     else {
         open( $in_fh, '<', $fasta_file );
     }
 
-    tie(
-        *OUT_FH,
-        'Bio::GenomeSignalTracks::Util::TieFileHandleLineSplit',
-        $output_dir,
-        $split_limit,
-        $gzip_output,
-        '.kmers',
-        "split_${kmer_size}_XXXXX"
-    );
+    tie( *OUT_FH, 'Bio::GenomeSignalTracks::Util::TieFileHandleLineSplit',
+        $output_dir, $split_limit, $gzip_output, '.kmers',
+        "${kmer_size}_XXXXX" );
 
     my $current_fn;
 
@@ -60,35 +52,21 @@ sub write_output {
             if ($current_fn) {
                 $self->dataflow_output_id( { kmer_file => $current_fn }, 1 );
             }
-
             $current_fn = $filename;
         }
     );
 
-    my $splitter;
-
-    if ($slurp) {
-        $splitter = Bio::GenomeSignalTracks::Util::SlurpFastaKmerWriter->new(
-            in_fh     => $in_fh,
-            kmer_size => $kmer_size,
-            out_fh    => \*OUT_FH,
-        );
-    }
-    else {
-        $splitter = Bio::GenomeSignalTracks::Util::FastaKmerWriter->new(
-            in_fh     => $in_fh,
-            kmer_size => $kmer_size,
-            out_fh    => \*OUT_FH,
-        );
-    }
+    my $splitter = Bio::GenomeSignalTracks::Util::FastaKmerWriter->new(
+        in_fh     => $in_fh,
+        kmer_size => $kmer_size,
+        out_fh    => \*OUT_FH,
+    );
 
     $splitter->split();
 
     close($in_fh);
     close(*OUT_FH);
-    $self->dataflow_output_id( { kmer_file => $current_fn }, 1 );
-
+    $self->dataflow_output_id( { kmer_file => $current_fn }, 1 ) if ($current_fn);
 }
 
 1;
-

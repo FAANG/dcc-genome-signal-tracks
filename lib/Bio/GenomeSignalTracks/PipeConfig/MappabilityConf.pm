@@ -30,9 +30,6 @@ sub default_options {
         # suffix used when looking for fasta files
         'fasta_suffix' => 'fa',
 
-        # slurp whole fasta file into memory before making kmers
-        'slurp_fasta' => 1,
-
         # maximum number of kmers to write into a batch for bowtie
         'kmer_split_limit' => 50000000,
 
@@ -133,7 +130,6 @@ sub pipeline_analyses {
             -parameters => {
                 gzip        => $self->o('gzip_kmer_files'),
                 split_limit => $self->o('kmer_split_limit'),
-                slurp       => $self->o('slurp_fasta'),
             },
             -rc_name   => '2Gb_job',
             -flow_into => {
