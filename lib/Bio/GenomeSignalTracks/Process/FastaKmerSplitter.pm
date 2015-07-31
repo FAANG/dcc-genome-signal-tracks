@@ -16,6 +16,7 @@ sub fetch_input {
     my $fasta_file  = $self->param_required('fasta_file');
     my $output_dir  = $self->param_required('output_dir');
     my $split_limit = $self->param_required('split_limit');
+    my $output_branch_id = $self->param_required('output_branch_id');
     my $gzip_output = $self->param('gzip');
 }
 
@@ -26,6 +27,7 @@ sub write_output {
     my $fasta_file  = $self->param_required('fasta_file');
     my $output_dir  = $self->param_required('output_dir');
     my $split_limit = $self->param_required('split_limit');
+    my $output_branch_id = $self->param_required('output_branch_id');
     my $gzip_output = $self->param('gzip');
 
     my $in_fh;
@@ -50,7 +52,7 @@ sub write_output {
         sub {
             my ( $tied_object, $filename ) = @_;
             if ($current_fn) {
-                $self->dataflow_output_id( { kmer_file => $current_fn }, 1 );
+                $self->dataflow_output_id( { kmer_file => $current_fn }, $output_branch_id );
             }
             $current_fn = $filename;
         }
@@ -66,7 +68,12 @@ sub write_output {
 
     close($in_fh);
     close(*OUT_FH);
-    $self->dataflow_output_id( { kmer_file => $current_fn }, 1 ) if ($current_fn);
+    
+    $self->dbc and $self->dbc->disconnect_when_inactive(0);
+    if ($current_fn && *OUT_FH->{num_writes}) {
+      $self->dataflow_output_id( { kmer_file => $current_fn }, $output_branch_id ) 
+    }
+
 }
 
 1;
