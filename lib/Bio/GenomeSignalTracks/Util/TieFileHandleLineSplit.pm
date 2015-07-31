@@ -117,6 +117,7 @@ sub _create_file {
     my ($self) = @_;
 
     my ( $fh, $filename ) = File::Temp::tempfile(
+        $self->{template},
         DIR      => $self->{path},
         SUFFIX   => $self->{suffix},
         TEMPLATE => $self->{template}
