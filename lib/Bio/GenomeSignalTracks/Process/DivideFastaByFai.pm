@@ -49,13 +49,11 @@ sub write_output {
     my $current_bundle;
 
     for my $fai (@$fai_entries) {
- #     print STDERR Dumper($current_bundle, $fai);
       
         if (  !$current_bundle
             || $fai->{length} + $current_bundle->{total_length} >
             $target_base_pairs )
         {
-#          print STDERR "New\n";
             $current_bundle = {
                 start_pos    => $fai->{offset},
                 seq_count    => 1,

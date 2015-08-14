@@ -133,7 +133,7 @@ sub pipeline_analyses {
             },
             -rc_name   => '2Gb_job',
             -flow_into => {
-                1 => {
+                2 => {
                     'bowtie' => {
                         'kmer_file'  => '#kmer_file#',
                         'index_dir'  => '#index_dir#',
