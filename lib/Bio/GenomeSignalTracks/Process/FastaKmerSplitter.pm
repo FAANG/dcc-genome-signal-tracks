@@ -5,7 +5,8 @@ use warnings;
 use base ('Bio::EnsEMBL::Hive::Process');
 
 use autodie;
-use PerlIO::gzip;
+
+#use PerlIO::gzip;
 use Bio::GenomeSignalTracks::Util::TieFileHandleLineSplit;
 use Bio::GenomeSignalTracks::Util::FastaKmerWriter;
 use Time::HiRes;
@@ -22,6 +23,7 @@ sub fetch_input {
     my $gzip_output      = $self->param('gzip');
     my $seq_start_pos    = $self->param('seq_start_pos');
     my $num_seqs_to_read = $self->param('num_seqs_to_read');
+    my $first_seq_name   = $self->param('first_seq_name');
 }
 
 sub param_defaults {
@@ -39,13 +41,14 @@ sub write_output {
     my $gzip_output      = $self->param('gzip');
     my $seq_start_pos    = $self->param('seq_start_pos');
     my $num_seqs_to_read = $self->param('num_seqs_to_read');
+    my $first_seq_name   = $self->param('first_seq_name');
 
     my $in_fh;
 
     $self->dbc and $self->dbc->disconnect_when_inactive(1);
 
     if ( $fasta_file =~ m/\.gz$/ ) {
-        open( $in_fh, '<:gzip', $fasta_file );
+        open( $in_fh, '-|', 'gzip', '-dc', $fasta_file );
     }
     else {
         open( $in_fh, '<', $fasta_file );
@@ -53,48 +56,53 @@ sub write_output {
     tie my $timer, 'Time::Stopwatch';
 
     if ($seq_start_pos) {
-        my $adjusted_seek_start = $seq_start_pos - 2;
-        seek( $in_fh, $adjusted_seek_start, 0 );
-        print STDERR "Seek to $seq_start_pos: $timer\n";
+        $seq_start_pos = $seq_start_pos - 2;
+        seek( $in_fh, $seq_start_pos, 0 );
     }
 
+    my $splitter;
+    my $counter;
+    my $suffix = '.kmers';
+
+    if ($gzip_output) {
+        $suffix .= '.gz';
+    }
+
+    my $filenamer_callback = sub {
+        my $seq_name = $splitter->current_seq_name();
+        my $byte_pos = tell($in_fh);
+
+        my $count = $counter++;
+
+        my $file_name =
+          "k${kmer_size}_${seq_name}_${count}${suffix}";
+        return $file_name;
+    };
+
     tie( *OUT_FH, 'Bio::GenomeSignalTracks::Util::TieFileHandleLineSplit',
-        $output_dir, $split_limit, $gzip_output, '.kmers',
-        "${kmer_size}_XXXXX" );
+        $output_dir, $split_limit, $gzip_output, $filenamer_callback );
 
-    my $current_fn;
-
-    # Register code to listen to file creation
-    ( tied *OUT_FH )->add_file_creation_listeners(
-        sub {
-            my ( $tied_object, $filename ) = @_;
-            print STDERR "New file - $filename: $timer\n";
-            if ($current_fn) {
-                print STDERR "Emmitted new job for $current_fn\n";
-                $self->dataflow_output_id( { kmer_file => $current_fn },
-                    $fan_branch_code );
-            }
-            $current_fn = $filename;
-        }
+    $splitter = Bio::GenomeSignalTracks::Util::FastaKmerWriter->new(
+        in_fh          => $in_fh,
+        kmer_size      => $kmer_size,
+        out_fh         => \*OUT_FH,
+        first_seq_name => $first_seq_name,
+        max_num_seqs   => $num_seqs_to_read,
     );
 
-    my $splitter = Bio::GenomeSignalTracks::Util::FastaKmerWriter->new(
-        in_fh     => $in_fh,
-        kmer_size => $kmer_size,
-        out_fh    => \*OUT_FH,
-    );
-
-    print STDERR "Start split\n";
     $splitter->split();
-    print STDERR "End split\n";
     close($in_fh);
     close(*OUT_FH);
 
+    if ($num_seqs_to_read && $num_seqs_to_read != $splitter->seqs_read()){
+      my $start_pos = $seq_start_pos || 0;
+      die "Expected to read $num_seqs_to_read seqs from $fasta_file (starting at $start_pos), but read ".$splitter->seqs_read();
+    }
+
     $self->dbc and $self->dbc->disconnect_when_inactive(0);
-    if ( $current_fn  ) {
-        $self->dataflow_output_id( { kmer_file => $current_fn },
-            $fan_branch_code );
-        print STDERR "Emmitted last job for $current_fn\n";
+
+    for ( ( tied *OUT_FH )->get_filenames ) {
+        $self->dataflow_output_id( { kmer_file => $_ }, $fan_branch_code );
     }
 
 }

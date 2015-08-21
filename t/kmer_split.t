@@ -4,16 +4,47 @@ use Test::More;
 use FindBin qw($Bin);
 use File::Temp qw/ tempdir /;
 use lib "$Bin/../lib";
-
+use PerlIO::gzip;
 use Bio::GenomeSignalTracks::Util::FastaKmerWriter;
 use Bio::GenomeSignalTracks::Util::TieFileHandleLineSplit;
 use File::Path qw(remove_tree make_path);
 use autodie;
 
-my $test_data_dir = "$Bin/data";
-my $test_out_dir = tempdir( CLEANUP => 1 );
+use Data::Dumper;
+
+my $test_data_dir   = "$Bin/data";
+my $test_out_dir    = tempdir( CLEANUP => 1 );
 my $seq_2_start_pos = 18;
 $seq_2_start_pos--;
+
+my @multi_kmer_expected = qw(
+  >a:1-5
+  12345
+  >a:2-6
+  23456
+  >a:3-7
+  34567
+  >a:4-8
+  45678
+  >a:5-9
+  56789
+  >a:6-10
+  67890
+  >b:1-5
+  ABCDE
+  >c:1-5
+  FFFFF
+  >c:2-6
+  FFFFF
+  >c:3-7
+  FFFFF
+  >c:4-8
+  FFFFF
+  >c:5-9
+  FFFFF
+  >c:6-10
+  FFFFF
+);
 
 make_path($test_out_dir);
 
@@ -33,7 +64,7 @@ sub simple_split {
     my $splitter = Bio::GenomeSignalTracks::Util::FastaKmerWriter->new(
         in_fh     => $in_fh,
         kmer_size => 2,
-        out_fh    => $out_fh
+        out_fh    => $out_fh,
     );
 
     $splitter->split();
@@ -41,13 +72,13 @@ sub simple_split {
     close($in_fh);
     close($out_fh);
 
-    my @kmers = slurp_kmers($test_out_fn);
+    my @kmers    = slurp_kmers($test_out_fn);
+    my $expected = [
+        '>seqname:1-2', 'AB', '>seqname:2-3', 'BC',
+        '>seqname:3-4', 'CD', '>seqname:4-5', 'DE'
+    ];
 
-    is_deeply(
-        \@kmers,
-        [ 'AB', 'BC', 'CD', 'DE' ],
-        "Splitter Kmers match expectation"
-    );
+    is_deeply( \@kmers, $expected, "Splitter Kmers match expectation" );
     unlink($test_out_fn);
 }
 
@@ -69,20 +100,7 @@ sub multi_fasta_split {
 
     my @kmers = slurp_kmers($test_out_fn);
 
-    my @expected_kmers = qw(12345
-      23456
-      34567
-      45678
-      56789
-      67890
-      ABCDE
-      FFFFF
-      FFFFF
-      FFFFF
-      FFFFF
-      FFFFF
-      FFFFF
-    );
+    my @expected_kmers = @multi_kmer_expected;
     is_deeply( \@kmers, \@expected_kmers,
         "Splitter Kmers from multi fasta match expectation" );
 
@@ -93,8 +111,15 @@ sub multi_fasta_multiplex_out {
 
     open( my $in_fh, '<', "$test_data_dir/three_seqs.fa" );
 
+    my $file_count = 0;
+    
+    my $file_namer = sub {
+      $file_count++;
+      return "tmp_${file_count}.kmers.gz";
+    };
+
     tie( *OUT_FH, 'Bio::GenomeSignalTracks::Util::TieFileHandleLineSplit',
-        $test_out_dir, 5, 0, '.kmers', 'splitXXXXX' );
+        $test_out_dir, 5, 1, $file_namer );
 
     my @out_files;
 
@@ -125,21 +150,7 @@ sub multi_fasta_multiplex_out {
         unlink($of);
     }
 
-    my @expected_kmers = qw(
-      12345
-      23456
-      34567
-      45678
-      56789
-      67890
-      ABCDE
-      FFFFF
-      FFFFF
-      FFFFF
-      FFFFF
-      FFFFF
-      FFFFF
-    );
+    my @expected_kmers = @multi_kmer_expected;
 
     is_deeply( \@kmers, \@expected_kmers,
         "Splitter Kmers from multi fasta match expectation" );
@@ -153,9 +164,10 @@ sub multi_fasta_seek_out {
     seek( $in_fh, $seq_2_start_pos, 0 );    # seek to start of second seq
 
     my $splitter = Bio::GenomeSignalTracks::Util::FastaKmerWriter->new(
-        in_fh     => $in_fh,
-        kmer_size => 5,
-        out_fh    => $out_fh
+        in_fh          => $in_fh,
+        kmer_size      => 5,
+        out_fh         => $out_fh,
+        first_seq_name => 'b',
 
     );
 
@@ -166,15 +178,7 @@ sub multi_fasta_seek_out {
 
     my @kmers = slurp_kmers($test_out_fn);
 
-    my @expected_kmers = qw(
-      ABCDE
-      FFFFF
-      FFFFF
-      FFFFF
-      FFFFF
-      FFFFF
-      FFFFF
-    );
+    my @expected_kmers = @multi_kmer_expected[ 12 .. $#multi_kmer_expected ];
     is_deeply( \@kmers, \@expected_kmers,
         "Splitter Kmers after seek in multi fasta match expectation" );
 
@@ -189,10 +193,11 @@ sub multi_fasta_seek_limit_seqs_out {
     seek( $in_fh, $seq_2_start_pos, 0 );    # seek to start of second seq
 
     my $splitter = Bio::GenomeSignalTracks::Util::FastaKmerWriter->new(
-        in_fh        => $in_fh,
-        kmer_size    => 5,
-        out_fh       => $out_fh,
-        max_num_seqs => 1,
+        in_fh          => $in_fh,
+        kmer_size      => 5,
+        out_fh         => $out_fh,
+        max_num_seqs   => 1,
+        first_seq_name => 'b',
     );
 
     $splitter->split();
@@ -202,11 +207,10 @@ sub multi_fasta_seek_limit_seqs_out {
 
     my @kmers = slurp_kmers($test_out_fn);
 
-    my @expected_kmers = qw(
-      ABCDE
-    );
+    my @expected_kmers = @multi_kmer_expected[ 12 .. 13 ];
     is_deeply( \@kmers, \@expected_kmers,
-        "Splitter Kmers after seek with max num of seqs to read in multi fasta match expectation" );
+"Splitter Kmers after seek with max num of seqs to read in multi fasta match expectation"
+    );
 
     unlink($test_out_fn);
 }
@@ -214,7 +218,12 @@ sub multi_fasta_seek_limit_seqs_out {
 sub slurp_kmers {
     my ($file) = @_;
     my @kmers;
-    open( my $results_in_fh, '<', $file );
+    my $op = '<';
+    if ($file =~ m/\.gz$/) {
+      $op .= ':gzip';
+    }
+    
+    open( my $results_in_fh, $op, $file );
     while (<$results_in_fh>) {
         chomp;
         push @kmers, $_;

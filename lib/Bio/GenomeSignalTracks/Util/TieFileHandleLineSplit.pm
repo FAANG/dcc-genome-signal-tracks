@@ -59,25 +59,18 @@ use Carp;
 # Tie::FileHandle implementation
 # Usage: tie *HANDLE, 'Tie::FileHandle::Split', $path, $split_size
 sub TIEHANDLE {
-    my ( $class, $path, $split_size, $gzip, $suffix, $template ) = @_;
-
-    $suffix |= '';
-
-    if ( $gzip && $suffix !~ m/\.gz$/ ) {
-        $suffix .= '.gz';
-    }
+    my ( $class, $path, $split_size, $gzip, $filenamer_callback ) = @_;
 
     my $self = {
-        class      => $class,
-        path       => $path,
-        split_size => $split_size,
-        current_fh => '',
-        num_writes => 0,
-        filenames  => [],
-        listeners  => {},
-        gzip       => $gzip,
-        suffix     => $suffix,
-        template   => $template,
+        class              => $class,
+        path               => $path,
+        split_size         => $split_size,
+        current_fh         => '',
+        num_writes         => 0,
+        filenames          => [],
+        listeners          => {},
+        gzip               => $gzip,
+        filenamer_callback => $filenamer_callback,
     };
 
     File::Path::make_path( $self->{path} ) unless -d $self->{path};
@@ -116,26 +109,28 @@ sub CLOSE {
 sub _create_file {
     my ($self) = @_;
 
-    my ( $fh, $filename ) = File::Temp::tempfile(
-        $self->{template},
-        DIR      => $self->{path},
-        SUFFIX   => $self->{suffix},
-        TEMPLATE => $self->{template}
-    );
-
-    if ( $self->{gzip} ) {
-        my $z = IO::Compress::Gzip->new($fh);
-        $fh = $z;
+    if ($self->{current_fh}) {
+      close( $self->{current_fh} );
     }
+
+    my $filenamer_callback = $self->{filenamer_callback};
+    my $file_name  = $filenamer_callback->();
+    
+    my $dir = $self->{path};
+    
+    my $path = "$dir/$file_name";
+    my $op = $self->{gzip} ? '>:gzip' : '>';
+    
+    open(my $fh, $op, $path);  
 
     $self->{current_fh} = $fh;
 
     # Call listeners
     foreach my $listener ( keys %{ $self->{listeners} } ) {
-        &{ $self->{listeners}->{$listener} }( $self, $filename );
+        &{ $self->{listeners}->{$listener} }( $self, $path );
     }
 
-    push @{ $self->{filenames} }, $filename;
+    push @{ $self->{filenames} }, $path;
 }
 
 =head1 METHODS

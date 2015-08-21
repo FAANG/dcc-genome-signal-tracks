@@ -24,6 +24,7 @@ standaloneJob(
         [
             'DATAFLOW',
             {
+                first_seq_name   => '1',
                 num_seqs_to_read => 13,
                 seq_start_pos    => 57,
             },
@@ -32,6 +33,7 @@ standaloneJob(
         [
             'DATAFLOW',
             {
+                first_seq_name   => '21',
                 num_seqs_to_read => 18,
                 seq_start_pos    => 503626595,
             },
@@ -40,6 +42,7 @@ standaloneJob(
         [
             'DATAFLOW',
             {
+                first_seq_name   => 'Z',
                 num_seqs_to_read => 15901,
                 seq_start_pos    => 936036306,
             },

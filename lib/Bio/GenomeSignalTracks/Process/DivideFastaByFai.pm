@@ -13,8 +13,6 @@ sub fetch_input {
     my $target_base_pairs = $self->param('target_base_pairs');
     my $fan_branch_code   = $self->param_required('fan_branch_code');
 
-    print STDERR Dumper( [ $fai, $target_base_pairs, $fan_branch_code ] );
-
     my @fai_entries;
     my @fai_columns = qw(seq_name length offset line_length line_byte_length);
 
@@ -49,15 +47,16 @@ sub write_output {
     my $current_bundle;
 
     for my $fai (@$fai_entries) {
-      
+
         if (  !$current_bundle
             || $fai->{length} + $current_bundle->{total_length} >
             $target_base_pairs )
         {
             $current_bundle = {
-                start_pos    => $fai->{offset},
-                seq_count    => 1,
-                total_length => $fai->{length},
+                first_seq_name => $fai->{seq_name},
+                start_pos      => $fai->{offset},
+                seq_count      => 1,
+                total_length   => $fai->{length},
             };
             push @fai_bundles, $current_bundle;
             next;
@@ -72,7 +71,8 @@ sub write_output {
         my $seq_start_pos = $self->dataflow_output_id(
             {
                 seq_start_pos    => $bundle->{start_pos},
-                num_seqs_to_read => $bundle->{seq_count}
+                num_seqs_to_read => $bundle->{seq_count},
+                first_seq_name   => $bundle->{first_seq_name},
             },
             $fan_branch_code
         );
