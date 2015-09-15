@@ -9,7 +9,6 @@ use File::Basename qw(fileparse);
 use IPC::System::Simple qw(system capture);
 use POSIX qw(mkfifo);
 use autodie;
-use Parallel::ForkManager;
 use Moose::Util::TypeConstraints;
 
 subtype 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
