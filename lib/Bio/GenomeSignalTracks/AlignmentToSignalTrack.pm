@@ -7,6 +7,9 @@ use File::Temp qw(tempdir);
 use File::Copy qw(move);
 use File::Basename qw(fileparse);
 use IPC::System::Simple qw(system capture);
+use POSIX qw(mkfifo);
+use autodie;
+use Parallel::ForkManager;
 use Moose::Util::TypeConstraints;
 
 subtype 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
@@ -22,8 +25,6 @@ subtype 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
     constraint => sub { -x $_ },
     message    => 'File path must exist and be executable'
   };
-
-no Moose::Util::TypeConstraints;
 
 #executable paths, all requried
 has 'samtools_path' => (
@@ -85,8 +86,12 @@ has 'exclude_regions_file_path' => (
 has 'sort'         => ( is => 'rw', isa => 'Bool', default => 1 );
 has 'verbose'      => ( is => 'rw', isa => 'Bool', default => 1 );
 has 'cleanup_temp' => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'output_precision_dp' => ( is => 'rw', isa => 'Maybe[Int]', );
 
-#todo - write file to dot - output file name, move into final location
+has 'output_type' =>
+  ( is => 'rw', isa => enum( [qw[ wig bg ]] ), default => 'wig' );
+no Moose::Util::TypeConstraints;
+
 #todo - check that you have sufficient information to run the process up front
 #todo - allow wig output
 #todo - check that you can write to output location early
@@ -103,23 +108,32 @@ sub generate_track {
     $self->_prep($tmp_dir);
     $self->log('Prep complete');
 
-    my $fwd_output        = $tmp_dir . '/fwd.bed';
-    my $rev_output        = $tmp_dir . '/rev.bed';
+    #    my $fwd_output        = $tmp_dir . '/fwd.bed';
+    #    my $rev_output        = $tmp_dir . '/rev.bed';
+
     my $fwd_scaled_output = $tmp_dir . '/fwd.scaled.shifted.bg';
     my $rev_scaled_output = $tmp_dir . '/rev.scaled.shifted.bg';
 
+    my $fifo_mode = 0600;
+    mkfifo( $fwd_scaled_output, $fifo_mode );
+    mkfifo( $rev_scaled_output, $fifo_mode );
+
     my $combined_output = $self->_temp_output_location;
 
-    $self->log( 'Split fwd reads to bed:', $fwd_output );
-    $self->_split_by_dir_to_bed( '-F16', $fwd_output );
-    $self->log( 'Rescale and shift fwd reads:', $fwd_scaled_output );
-    $self->_rescale_and_shift( $fwd_output, $fwd_scaled_output, '+' );
+    my $pm = new Parallel::ForkManager(2);
 
-    $self->log( 'Split rev reads to bed:', $rev_output );
-    $self->_split_by_dir_to_bed( '-f16', $rev_output );
-    $self->log( 'Rescale and shift rev reads', $rev_scaled_output );
-    $self->_rescale_and_shift( $rev_output, $rev_scaled_output, '-' );
+#start the inputs into the FIFOs, they will block until somthing reads from them
+    for (
+        [ '-F16', $fwd_scaled_output, '+' ],
+        [ '-f16', $rev_scaled_output, '-' ],
+      )
+    {
+        my $pid = my $pid = fork; $pm->start and next;
+        $self->_split_by_dir_to_bed(@$_);
+        $pm->finish;    # Terminates the child process
+    }
 
+    # this now reads from the FIFOs, unblocking their inputs
     $self->log( 'Combine, extend and smooth all reads:', $combined_output );
     $self->_combine_extend_smooth( $combined_output, $fwd_scaled_output,
         $rev_scaled_output );
@@ -127,6 +141,8 @@ sub generate_track {
     $self->log( 'Move output to final location:', $self->output_file_path );
     move( $combined_output, $self->output_file_path );
     $self->log( 'Output in', $self->output_file_path );
+
+    $self->_do_cleanup();
 }
 
 sub _temp_output_location {
@@ -142,65 +158,116 @@ sub _temp_output_location {
 }
 
 sub _split_by_dir_to_bed {
-    my ( $self, $samtools_filter, $target ) = @_;
+    my ( $self, $samtools_filter, $target, $shift_op, ) = @_;
 
     my @cmd = (
-        $self->samtools_path,       'view -ub', '-F4', $samtools_filter,
-        $self->alignment_file_path, '|',
-        $self->bedtools_path, 'bamtobed', '|',
-        'cut -f1-3',
-
-        #could exclude low mappabilty regions here
+        $self->samtools_path,
+        'view -ub',
+        '-F4',
+        $samtools_filter,
+        $self->alignment_file_path,
+        '|',
+        $self->bedtools_path,
+        'bamtobed',
+        '|',
+        'awk \'BEGIN{FS="\t";OFS=FS}{print $1,$2,$3,1}\'',
     );
 
     if ( $self->exclude_regions_file_path ) {
-        push @cmd, '|', $self->bedtools_path, 'intersect', '-v', '-a -', '-b',
+        push @cmd, '|', $self->bedtools_path, 'intersect', '-sorted', '-v',
+          '-a', 'stdin',
+          '-b',
           $self->exclude_regions_file_path;
     }
 
     push @cmd, '|', 'sort -k1,1 -k2,2n' if ( $self->sort );
+
+    push @cmd, '|', $self->wiggletools_path, 'write_bg -', 'ratio strict', '-',
+      'scale', $self->_expectation_correction_factor,
+      $self->mappability_file_path;
+
+    my $shift_size = $self->_shift_size;
+
+    push @cmd,
+      '|',
+      'awk',
+      '-F $\'\t\'',
+"'BEGIN{OFS=FS}{\$2 = \$2 $shift_op $shift_size; \$3 = \$3 $shift_op $shift_size; if(\$2<0){\$2=0};print}'";
+
     push @cmd, '>', $target;
 
     my $cmd = join( ' ', @cmd );
 
-    system($cmd);
+    $self->do_system($cmd);
 }
 
-sub _rescale_and_shift {
-    my ( $self, $src, $target, $shift_op ) = @_;
-
-    my $shift_size = $self->_shift_size;
-
-    my $cmd = join( ' ',
-        $self->wiggletools_path,
-        'write_bg -',
-        'ratio',
-        $src,
-        'scale',
-        $self->_expectation_correction_factor,
-        $self->mappability_file_path,
-        '|',
-        'awk',
-        '-F $\'\t\'',
-"'BEGIN{OFS=FS}{\$2 = \$2 $shift_op $shift_size; \$3 = \$3 $shift_op $shift_size; if(\$2<0){\$2=0};print}'",
-        '>',
-        $target );
-
+sub do_system {
+    my ( $self, $cmd ) = @_;
+    $self->log( "executing", $cmd );
     system($cmd);
 }
 
 sub _combine_extend_smooth {
     my ( $self, $target, @files ) = @_;
 
+    my $output_cmd = 'write_bg';
+    if ( $self->output_type eq 'wig' ) {
+        $output_cmd = 'write';
+    }
+
     my $cmd = join( ' ',
-        $self->wiggletools_path,          'write_bg',
-        $target,                          'mult strict',
+        $self->wiggletools_path,          $output_cmd,
+        '-',                              'mult strict',
         $self->chrom_sizes_bed_file_path, 'smooth',
         $self->smooth_length,             'extend',
         $self->_extend_length,            'sum',
         @files, );
 
-    system($cmd);
+    open( my $in_fh,  '-|', $cmd );
+    open( my $out_fh, '>',  $target );
+
+    while (<$in_fh>) {
+        if (   m/^fixedStep/
+            || m/^variableStep/ )
+        {
+            print $out_fh $_;
+            next;
+        }
+        chomp;
+        my @vals = split /\t/;
+        if ( scalar(@vals) == 4 ) {
+
+            #bedgraph format
+            $vals[3] = $self->post_process_score( $vals[3] );
+        }
+        if ( scalar(@vals) == 2 ) {
+
+            #variableStep format
+            $vals[1] = $self->post_process_score( $vals[1] );
+        }
+        if ( scalar(@vals) == 1 ) {
+
+            #fixedStep format
+            $vals[0] = $self->post_process_score( $vals[0] );
+        }
+
+        print $out_fh join( "\t", @vals ) . "\n";
+    }
+
+    close($in_fh);
+    close($out_fh);
+}
+
+sub post_process_score {
+    my ( $self, $score ) = @_;
+
+    if ( $score =~ m/^-0.00000/ ) {
+        $score = 0;
+    }
+    if ( $self->output_precision_dp ) {
+        $score = sprintf '%.' . $self->output_precision_dp . 'f', $score;
+    }
+    return $score;
 }
 
 sub _create_chrom_bed_file {
@@ -220,7 +287,7 @@ sub _create_chrom_bed_file {
     push @cmd, '>', $target;
     my $cmd = join( ' ', @cmd );
 
-    system($cmd);
+    $self->do_system($cmd);
 }
 
 sub temp_dir {
@@ -249,6 +316,12 @@ sub _shift_size {
     my ($self) = @_;
 
     return int( $self->fragment_length / 2 );
+}
+
+sub _do_cleanup {
+    my ( $self, $tmp_dir ) = @_;
+
+    if ( $self->cleanup_temp ) $self->do_system( 'rm -rf ' . $tmp_dir );
 }
 
 sub _expectation_correction_factor {
