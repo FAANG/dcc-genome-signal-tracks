@@ -77,6 +77,7 @@ has 'smooth_length' => ( is => 'rw', isa => 'Int' )
   ;    #will default to fragment length
 
 has 'sort' => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'verbose' => (is => 'rw', isa => 'Bool', default => 1);
 
 
 #todo - filter low mappability regions (optional)
@@ -316,7 +317,7 @@ sub _prep {
 sub log {
     my ( $self, $msg ) = @_;
 
-    print STDERR $msg . "\n";
+    print STDERR $msg . "\n" if ($self->verbose);
 }
 
 1;
