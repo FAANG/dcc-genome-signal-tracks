@@ -6,7 +6,6 @@ use base ('Bio::EnsEMBL::Hive::Process');
 
 use autodie;
 
-#use PerlIO::gzip;
 use Bio::GenomeSignalTracks::Util::TieFileHandleLineSplit;
 use Bio::GenomeSignalTracks::Util::FastaKmerWriter;
 use Time::HiRes;

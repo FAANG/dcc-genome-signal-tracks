@@ -4,7 +4,7 @@ use Test::More;
 use FindBin qw($Bin);
 use File::Temp qw/ tempdir /;
 use lib "$Bin/../lib";
-use PerlIO::gzip;
+
 use Bio::GenomeSignalTracks::Util::FastaKmerWriter;
 use Bio::GenomeSignalTracks::Util::TieFileHandleLineSplit;
 use File::Path qw(remove_tree make_path);
@@ -218,12 +218,15 @@ sub multi_fasta_seek_limit_seqs_out {
 sub slurp_kmers {
     my ($file) = @_;
     my @kmers;
-    my $op = '<';
-    if ($file =~ m/\.gz$/) {
-      $op .= ':gzip';
-    }
+    my $results_in_fh;
     
-    open( my $results_in_fh, $op, $file );
+    if ( $file =~ m/\.gz$/ ) {
+        open( $results_in_fh, '-|', 'gzip', '-dc', $file );
+    }
+    else {
+        open( $results_in_fh, '<', $file );
+    }
+      
     while (<$results_in_fh>) {
         chomp;
         push @kmers, $_;
