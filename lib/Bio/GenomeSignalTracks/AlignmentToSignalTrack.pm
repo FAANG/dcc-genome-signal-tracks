@@ -71,13 +71,13 @@ has 'output_file_path' => ( is => 'rw', isa => 'Str' );
 has 'read_count' => ( is => 'rw', isa => 'Int' )
   ;    #will be calculated with samtools if necessary
 has 'read_length'     => ( is => 'rw', isa => 'Int' ); # will calculate from the first read if not specified
-has 'working_dir' => ( is => 'rw', isa => 'Maybe[Str]' )
-  ;    #will use default temp folder if not specificed
+has 'working_dir' => ( is => 'rw', isa => 'Maybe[Str]' ); #will use default temp folder if not specificed
 has 'smooth_length' => ( is => 'rw', isa => 'Int' )
   ;    #will default to fragment length
 
 has 'sort' => ( is => 'rw', isa => 'Bool', default => 1 );
 has 'verbose' => (is => 'rw', isa => 'Bool', default => 1);
+has 'cleanup_temp' => (is => 'rw', isa => 'Bool', default => 1);
 
 
 #todo - filter low mappability regions (optional)
@@ -85,11 +85,11 @@ has 'verbose' => (is => 'rw', isa => 'Bool', default => 1);
 #todo - check that you have sufficient information to run the process up front
 #todo - allow wig output
 #todo - check that you can write to output location early
-#todo - add verbose flag
 #todo - mark required information in moose declarations
 #todo - filter output to set precision, tidy up any -0.000 values
 #todo - can you do this in a single pass with fifos?
 #todo - can you apply this to paired end data?
+#todo - disable cleanup for debugging
 
 sub generate_track {
     my ($self) = @_;
@@ -206,10 +206,14 @@ sub _create_chrom_bed_file {
 sub temp_dir {
     my ($self) = @_;
 
-    my %opts = ( CLEANUP => 1 );
+    my %opts = ( CLEANUP => $self->cleanup_temp );
 
     if ( $self->working_dir ) {
         $opts{DIR} = $self->working_dir;
+    }
+    
+    if (!$self->cleanup_temp){
+      $self->log("Temp dir will not be cleaned up at program exit");
     }
 
     return tempdir(%opts);
