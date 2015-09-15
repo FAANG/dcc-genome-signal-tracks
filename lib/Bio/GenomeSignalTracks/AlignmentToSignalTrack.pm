@@ -5,6 +5,7 @@ use Moose;
 use Carp;
 use File::Temp qw(tempdir);
 use File::Copy qw(move);
+use File::Basename qw(fileparse);
 use IPC::System::Simple qw(system capture);
 use Moose::Util::TypeConstraints;
 
@@ -70,15 +71,16 @@ has 'output_file_path' => ( is => 'rw', isa => 'Str' );
 # optional
 has 'read_count' => ( is => 'rw', isa => 'Int' )
   ;    #will be calculated with samtools if necessary
-has 'read_length'     => ( is => 'rw', isa => 'Int' ); # will calculate from the first read if not specified
-has 'working_dir' => ( is => 'rw', isa => 'Maybe[Str]' ); #will use default temp folder if not specificed
+has 'read_length' => ( is => 'rw', isa => 'Int' )
+  ;    # will calculate from the first read if not specified
+has 'working_dir' => ( is => 'rw', isa => 'Maybe[Str]' )
+  ;    #will use default temp folder if not specificed
 has 'smooth_length' => ( is => 'rw', isa => 'Int' )
   ;    #will default to fragment length
 
-has 'sort' => ( is => 'rw', isa => 'Bool', default => 1 );
-has 'verbose' => (is => 'rw', isa => 'Bool', default => 1);
-has 'cleanup_temp' => (is => 'rw', isa => 'Bool', default => 1);
-
+has 'sort'         => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'verbose'      => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'cleanup_temp' => ( is => 'rw', isa => 'Bool', default => 1 );
 
 #todo - filter low mappability regions (optional)
 #todo - write file to dot - output file name, move into final location
@@ -89,40 +91,51 @@ has 'cleanup_temp' => (is => 'rw', isa => 'Bool', default => 1);
 #todo - filter output to set precision, tidy up any -0.000 values
 #todo - can you do this in a single pass with fifos?
 #todo - can you apply this to paired end data?
-#todo - disable cleanup for debugging
 
 sub generate_track {
     my ($self) = @_;
 
     my $tmp_dir = $self->temp_dir;
-    $self->log("Using $tmp_dir as temp dir");
+    $self->log( 'Temp dir:', $tmp_dir );
     $self->_prep($tmp_dir);
-    $self->log("Prep complete");
+    $self->log('Prep complete');
 
     my $fwd_output        = $tmp_dir . '/fwd.bed';
     my $rev_output        = $tmp_dir . '/rev.bed';
     my $fwd_scaled_output = $tmp_dir . '/fwd.scaled.shifted.bg';
     my $rev_scaled_output = $tmp_dir . '/rev.scaled.shifted.bg';
 
-    my $combined_output = $tmp_dir . '/combined.bg';
+    my $combined_output = $self->temp_output_location;
 
-    $self->log("Split fwd reads to bed");
+    $self->log( 'Split fwd reads to bed:', $fwd_output );
     $self->_split_by_dir_to_bed( '-F16', $fwd_output );
-    $self->log("Rescale and shift fwd reads");
+    $self->log( 'Rescale and shift fwd reads:', $fwd_scaled_output );
     $self->_rescale_and_shift( $fwd_output, $fwd_scaled_output, '+' );
 
-    $self->log("Split rev reads to bed");
+    $self->log( 'Split rev reads to bed:', $rev_output );
     $self->_split_by_dir_to_bed( '-f16', $rev_output );
-    $self->log("Rescale and shift rev reads");
+    $self->log( 'Rescale and shift rev reads', $rev_scaled_output );
     $self->_rescale_and_shift( $rev_output, $rev_scaled_output, '-' );
 
-    $self->log("Combine, extend and smooth all reads");
+    $self->log( 'Combine, extend and smooth all reads:', $combined_output );
     $self->_combine_extend_smooth( $combined_output, $fwd_scaled_output,
         $rev_scaled_output );
 
-    $self->log("Move output to final location");
+    $self->log( 'Move output to final location:', $self->output_file_path );
     move( $combined_output, $self->output_file_path );
-    $self->log( "Output in " . $self->output_file_path );
+    $self->log( 'Output in', $self->output_file_path );
+}
+
+sub temp_output_location {
+    my ($self) = @_;
+
+    my ( $name, $path ) = fileparse( $self->output_file_path );
+    my $temp_output_location = $path . '/.' . $name;
+
+    $self->log( 'Writing final output to', $temp_output_location );
+
+    return $temp_output_location;
+
 }
 
 sub _split_by_dir_to_bed {
@@ -211,9 +224,9 @@ sub temp_dir {
     if ( $self->working_dir ) {
         $opts{DIR} = $self->working_dir;
     }
-    
-    if (!$self->cleanup_temp){
-      $self->log("Temp dir will not be cleaned up at program exit");
+
+    if ( !$self->cleanup_temp ) {
+        $self->log("Temp dir will not be cleaned up at program exit");
     }
 
     return tempdir(%opts);
@@ -268,7 +281,10 @@ sub _prep {
     my ( $self, $tmp_dir ) = @_;
 
     if ( $self->mappability_auc_file_path && !$self->mappability_auc ) {
-        $self->log("Getting mappability AUC from file ");
+        $self->log(
+            'Getting mappability AUC from file:',
+            $self->mappability_auc_file_path
+        );
         my $mappability =
           capture( 'head -1 ' . $self->mappability_auc_file_path );
         chomp $mappability;
@@ -276,7 +292,8 @@ sub _prep {
     }
 
     if ( !$self->mappability_auc && $self->mappability_file_path ) {
-        $self->log("Calculating mappability AUC from mappability file");
+        $self->log( 'Calculating mappability AUC from mappability file:',
+            $self->mappability_file_path );
         my $mappability = capture(
             $self->wiggletools_path . ' AUC ' . $self->mappability_file_path );
         chomp $mappability;
@@ -284,7 +301,8 @@ sub _prep {
     }
 
     if ( !$self->read_count ) {
-        $self->log("Getting read count from alignment");
+        $self->log( 'Getting read count from alignment',
+            $self->alignment_file_path );
         my $read_count =
           capture( $self->samtools_path
               . ' view -c -F4 '
@@ -299,29 +317,29 @@ sub _prep {
     }
 
     if ( !$self->chrom_sizes_bed_file_path ) {
-        $self->log("Creating chroms.bed file");
         my $chroms = $tmp_dir . '/chroms.bed';
+        $self->log( 'Creating chroms file:', $chroms );
         $self->_create_chrom_bed_file($chroms);
         $self->chrom_sizes_bed_file_path($chroms);
     }
 
     if ( !$self->read_length ) {
-        $self->log("Getting read length from first read in alignment");
+        $self->log('Getting read length from first read in alignment:',$self->alignment_file_path);
         my $cmd = join( ' ',
             $self->samtools_path, 'view', $self->alignment_file_path, '|',
             'head -1', '|', 'cut -f10' );
         my $first_read = capture($cmd);
 
         chomp($first_read);
-        $self->log( "First read: " . $first_read );
+        $self->log( 'First read:' , $first_read );
         $self->read_length( length($first_read) );
     }
 }
 
 sub log {
-    my ( $self, $msg ) = @_;
+    my ( $self, @msg ) = @_;
 
-    print STDERR $msg . "\n" if ($self->verbose);
+    print STDERR join( ' ', @msg ) . "\n" if ( $self->verbose );
 }
 
 1;
