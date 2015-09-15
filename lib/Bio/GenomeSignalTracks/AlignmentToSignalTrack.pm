@@ -83,21 +83,18 @@ has 'exclude_regions_file_path' => (
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable'
 );
 
-has 'sort'         => ( is => 'rw', isa => 'Bool', default => 1 );
-has 'verbose'      => ( is => 'rw', isa => 'Bool', default => 1 );
-has 'cleanup_temp' => ( is => 'rw', isa => 'Bool', default => 1 );
-has 'output_precision_dp' => ( is => 'rw', isa => 'Maybe[Int]', );
+has 'force_lexographic_sort' => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'verbose'                => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'cleanup_temp'           => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'output_precision_dp' => ( is => 'rw', isa => 'Maybe[Int]', default => 2 );
 
 has 'output_type' =>
   ( is => 'rw', isa => enum( [qw[ wig bg ]] ), default => 'wig' );
 no Moose::Util::TypeConstraints;
 
 #todo - check that you have sufficient information to run the process up front
-#todo - allow wig output
 #todo - check that you can write to output location early
 #todo - mark required information in moose declarations
-#todo - filter output to set precision, tidy up any -0.000 values
-#todo - can you do this in a single pass with fifos?
 #todo - can you apply this to paired end data?
 
 sub generate_track {
@@ -128,9 +125,14 @@ sub generate_track {
         [ '-f16', $rev_scaled_output, '-' ],
       )
     {
-        my $pid = my $pid = fork; $pm->start and next;
-        $self->_split_by_dir_to_bed(@$_);
-        $pm->finish;    # Terminates the child process
+        my $pid = fork();
+        if ( !defined $pid ) {
+            die "Cannot fork: $!";
+        }
+        elsif ( $pid == 0 ) {
+            $self->_split_by_dir_to_bed(@$_);
+            exit 0;
+        }
     }
 
     # this now reads from the FIFOs, unblocking their inputs
@@ -142,7 +144,7 @@ sub generate_track {
     move( $combined_output, $self->output_file_path );
     $self->log( 'Output in', $self->output_file_path );
 
-    $self->_do_cleanup();
+    $self->_do_cleanup($tmp_dir);
 }
 
 sub _temp_output_location {
@@ -180,7 +182,7 @@ sub _split_by_dir_to_bed {
           $self->exclude_regions_file_path;
     }
 
-    push @cmd, '|', 'sort -k1,1 -k2,2n' if ( $self->sort );
+    push @cmd, '|', 'sort -k1,1 -k2,2n' if ( $self->force_lexographic_sort );
 
     push @cmd, '|', $self->wiggletools_path, 'write_bg -', 'ratio strict', '-',
       'scale', $self->_expectation_correction_factor,
@@ -264,7 +266,7 @@ sub post_process_score {
     if ( $score =~ m/^-0.00000/ ) {
         $score = 0;
     }
-    if ( $self->output_precision_dp ) {
+    if ( defined $self->output_precision_dp ) {
         $score = sprintf '%.' . $self->output_precision_dp . 'f', $score;
     }
     return $score;
@@ -283,7 +285,7 @@ sub _create_chrom_bed_file {
         '-F $\'\t\'',         "'BEGIN{OFS=FS}{print \$1,0,\$2,1}'",
     );
 
-    push @cmd, '|', 'sort -k1,1 -k2,2n' if ( $self->sort );
+    push @cmd, '|', 'sort -k1,1 -k2,2n' if ( $self->force_lexographic_sort );
     push @cmd, '>', $target;
     my $cmd = join( ' ', @cmd );
 
@@ -321,7 +323,7 @@ sub _shift_size {
 sub _do_cleanup {
     my ( $self, $tmp_dir ) = @_;
 
-    if ( $self->cleanup_temp ) $self->do_system( 'rm -rf ' . $tmp_dir );
+    $self->do_system( 'rm -rf ' . $tmp_dir ) if ( $self->cleanup_temp );
 }
 
 sub _expectation_correction_factor {
