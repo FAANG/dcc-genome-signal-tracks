@@ -77,12 +77,15 @@ has 'working_dir' => ( is => 'rw', isa => 'Maybe[Str]' )
   ;    #will use default temp folder if not specificed
 has 'smooth_length' => ( is => 'rw', isa => 'Int' )
   ;    #will default to fragment length
+has 'exclude_regions_file_path' => (
+    is  => 'rw',
+    isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable'
+);
 
 has 'sort'         => ( is => 'rw', isa => 'Bool', default => 1 );
 has 'verbose'      => ( is => 'rw', isa => 'Bool', default => 1 );
 has 'cleanup_temp' => ( is => 'rw', isa => 'Bool', default => 1 );
 
-#todo - filter low mappability regions (optional)
 #todo - write file to dot - output file name, move into final location
 #todo - check that you have sufficient information to run the process up front
 #todo - allow wig output
@@ -105,7 +108,7 @@ sub generate_track {
     my $fwd_scaled_output = $tmp_dir . '/fwd.scaled.shifted.bg';
     my $rev_scaled_output = $tmp_dir . '/rev.scaled.shifted.bg';
 
-    my $combined_output = $self->temp_output_location;
+    my $combined_output = $self->_temp_output_location;
 
     $self->log( 'Split fwd reads to bed:', $fwd_output );
     $self->_split_by_dir_to_bed( '-F16', $fwd_output );
@@ -126,13 +129,13 @@ sub generate_track {
     $self->log( 'Output in', $self->output_file_path );
 }
 
-sub temp_output_location {
+sub _temp_output_location {
     my ($self) = @_;
 
     my ( $name, $path ) = fileparse( $self->output_file_path );
-    my $temp_output_location = $path . '/.' . $name;
+    my $temp_output_location = $path . '.' . $name;
 
-    $self->log( 'Writing final output to', $temp_output_location );
+    $self->log( 'Using temp location for final output', $temp_output_location );
 
     return $temp_output_location;
 
@@ -148,8 +151,12 @@ sub _split_by_dir_to_bed {
         'cut -f1-3',
 
         #could exclude low mappabilty regions here
-
     );
+
+    if ( $self->exclude_regions_file_path ) {
+        push @cmd, '|', $self->bedtools_path, 'intersect', '-v', '-a -', '-b',
+          $self->exclude_regions_file_path;
+    }
 
     push @cmd, '|', 'sort -k1,1 -k2,2n' if ( $self->sort );
     push @cmd, '>', $target;
@@ -324,14 +331,16 @@ sub _prep {
     }
 
     if ( !$self->read_length ) {
-        $self->log('Getting read length from first read in alignment:',$self->alignment_file_path);
+        $self->log( 'Getting read length from first read in alignment:',
+            $self->alignment_file_path );
         my $cmd = join( ' ',
             $self->samtools_path, 'view', $self->alignment_file_path, '|',
             'head -1', '|', 'cut -f10' );
         my $first_read = capture($cmd);
 
         chomp($first_read);
-        $self->log( 'First read:' , $first_read );
+        $self->log( 'First read length:',
+            length($first_read), '(', $first_read, ')' );
         $self->read_length( length($first_read) );
     }
 }
