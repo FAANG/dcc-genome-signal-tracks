@@ -3,6 +3,7 @@ package Bio::GenomeSignalTracks::AlignmentToSignalTrack;
 use strict;
 use Moose;
 use Carp;
+use File::Path qw(remove_tree);
 use File::Temp qw(tempdir);
 use File::Copy qw(move);
 use File::Basename qw(fileparse);
@@ -86,15 +87,21 @@ has 'force_lexographic_sort' => ( is => 'rw', isa => 'Bool', default => 1 );
 has 'verbose'                => ( is => 'rw', isa => 'Bool', default => 1 );
 has 'cleanup_temp'           => ( is => 'rw', isa => 'Bool', default => 1 );
 has 'output_precision_dp' => ( is => 'rw', isa => 'Maybe[Int]', default => 2 );
-
 has 'output_type' =>
-  ( is => 'rw', isa => enum( [qw[ wig bg ]] ), default => 'wig' );
+  ( is => 'rw', isa => enum( [qw(wig bg)] ), default => 'wig' );
+has 'intermediate_files' => (
+    is      => 'rw',
+    isa     => enum( [qw(tmp fifo)] ),
+    default => 'fifo'
+);
+
 no Moose::Util::TypeConstraints;
 
 #todo - check that you have sufficient information to run the process up front
 #todo - check that you can write to output location early
 #todo - mark required information in moose declarations
 #todo - can you apply this to paired end data?
+#todo - make fifos optional
 
 sub generate_track {
     my ($self) = @_;
@@ -104,40 +111,50 @@ sub generate_track {
     $self->_prep($tmp_dir);
     $self->log('Prep complete');
 
-    #    my $fwd_output        = $tmp_dir . '/fwd.bed';
-    #    my $rev_output        = $tmp_dir . '/rev.bed';
-
     my $fwd_scaled_output = $tmp_dir . '/fwd.scaled.shifted.bg';
     my $rev_scaled_output = $tmp_dir . '/rev.scaled.shifted.bg';
 
-    my $fifo_mode = 0600;
-    mkfifo( $fwd_scaled_output, $fifo_mode );
-    mkfifo( $rev_scaled_output, $fifo_mode );
-
     my $combined_output = $self->_temp_output_location;
 
-    my $pm = new Parallel::ForkManager(2);
-
-#start the inputs into the FIFOs, they will block until somthing reads from them
-    for (
+    my @split_options = (
         [ '-F16', $fwd_scaled_output, '+' ],
         [ '-f16', $rev_scaled_output, '-' ],
-      )
-    {
-        my $pid = fork();
-        if ( !defined $pid ) {
-            die "Cannot fork: $!";
-        }
-        elsif ( $pid == 0 ) {
-            $self->_split_by_dir_to_bed(@$_);
-            exit 0;
-        }
-    }
+    );
 
-    # this now reads from the FIFOs, unblocking their inputs
-    $self->log( 'Combine, extend and smooth all reads:', $combined_output );
-    $self->_combine_extend_smooth( $combined_output, $fwd_scaled_output,
-        $rev_scaled_output );
+    if ( $self->intermediate_files eq 'fifo' ) {
+        $self->log("Passing intermediate data through fifos");
+        my $fifo_mode = 0600;
+        mkfifo( $fwd_scaled_output, $fifo_mode );
+        mkfifo( $rev_scaled_output, $fifo_mode );
+
+        for (@split_options) {
+            my $pid = fork;
+
+            if ( !defined $pid ) {
+                die "Cannot fork: $!";
+            }
+            elsif ( $pid == 0 ) {
+   #write intermediate data to fifos - process will block until there's a reader
+                $self->_split_by_dir_to_bed(@$_);
+                exit 0;
+            }
+        }
+
+        # this now reads from the FIFOs, unblocking their inputs
+        $self->_combine_extend_smooth( $combined_output, $fwd_scaled_output,
+            $rev_scaled_output );
+    }
+    if ( $self->intermediate_files eq 'tmp' ) {
+        $self->log("Passing intermediate data through tmp files");
+        
+        for (@split_options) {
+          $self->log("Split alignment by dir",@$_);
+            $self->_split_by_dir_to_bed(@$_);
+        }
+        $self->log( 'Combine, extend and smooth all reads:', $combined_output );
+        $self->_combine_extend_smooth( $combined_output, $fwd_scaled_output,
+            $rev_scaled_output );
+    }
 
     $self->log( 'Move output to final location:', $self->output_file_path );
     move( $combined_output, $self->output_file_path );
@@ -183,7 +200,8 @@ sub _split_by_dir_to_bed {
 
     push @cmd, '|', 'sort -k1,1 -k2,2n' if ( $self->force_lexographic_sort );
 
-    push @cmd, '|', $self->wiggletools_path, 'write_bg -', 'ratio strict', '-',
+    push @cmd, '|', $self->wiggletools_path, 'write_bg -', 'ratio strict',
+      '-',
       'scale', $self->_expectation_correction_factor,
       $self->mappability_file_path;
 
@@ -322,7 +340,7 @@ sub _shift_size {
 sub _do_cleanup {
     my ( $self, $tmp_dir ) = @_;
 
-    $self->do_system( 'rm -rf ' . $tmp_dir ) if ( $self->cleanup_temp );
+    remove_tree( $tmp_dir ) if ( $self->cleanup_temp );
 }
 
 sub _expectation_correction_factor {
