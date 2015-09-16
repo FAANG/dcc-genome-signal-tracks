@@ -11,6 +11,12 @@ use IPC::System::Simple qw(system capture);
 use POSIX qw(mkfifo);
 use autodie;
 use Moose::Util::TypeConstraints;
+use namespace::autoclean;
+
+subtype 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt',
+  as 'Int',
+  where { $_ > 0 },
+  message { "The number you provided, $_, was not a positive number" };
 
 subtype 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
   as 'Str',
@@ -30,17 +36,20 @@ subtype 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
 has 'samtools_path' => (
     is => 'rw',
     isa =>
-      'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable'
+      'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
+    required => 1,
 );
 has 'wiggletools_path' => (
     is => 'rw',
     isa =>
-      'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable'
+      'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
+    required => 1,
 );
 has 'bedtools_path' => (
     is => 'rw',
     isa =>
-      'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable'
+      'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
+    required => 1,
 );
 
 # chrom sizes bed file, will be created from the bam if not otherwise present
@@ -52,7 +61,8 @@ has 'chrom_sizes_bed_file_path' => (
 #
 has 'mappability_file_path' => (
     is  => 'rw',
-    isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable'
+    isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
+    required => 1,
 );
 has 'mappability_auc' => ( is => 'rw', isa => 'Num' );
 has 'mappability_auc_file_path' => (
@@ -62,46 +72,65 @@ has 'mappability_auc_file_path' => (
 
 # required
 
-has 'fragment_length' => ( is => 'rw', isa => 'Int' );
+has 'fragment_length' => (
+    is       => 'rw',
+    isa      => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt',
+    required => 1,
+);
 has 'alignment_file_path' => (
     is  => 'rw',
-    isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable'
+    isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
+    required => 1,
 );
-has 'output_file_path' => ( is => 'rw', isa => 'Str' );
+has 'output_file_path' => ( is => 'rw', isa => 'Str', required => 1, );
 
 # optional
-has 'read_count' => ( is => 'rw', isa => 'Int' )
-  ;    #will be calculated with samtools if necessary
-has 'read_length' => ( is => 'rw', isa => 'Int' )
-  ;    # will calculate from the first read if not specified
+has 'read_count' => (
+    is  => 'rw',
+    isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt'
+);    #will be calculated with samtools if necessary
+has 'read_length' => (
+    is  => 'rw',
+    isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt'
+);    # will calculate from the first read if not specified
 has 'working_dir' => ( is => 'rw', isa => 'Maybe[Str]' )
   ;    #will use default temp folder if not specificed
-has 'smooth_length' => ( is => 'rw', isa => 'Int' )
-  ;    #will default to fragment length
+has 'smooth_length' => (
+    is  => 'rw',
+    isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt'
+);     #will default to fragment length
+
 has 'exclude_regions_file_path' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable'
 );
 
-has 'force_lexographic_sort' => ( is => 'rw', isa => 'Bool', default => 1 );
-has 'verbose'                => ( is => 'rw', isa => 'Bool', default => 1 );
-has 'cleanup_temp'           => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'force_lexographic_sort' =>
+  ( is => 'rw', isa => 'Bool', default => 1, required => 1, );
 has 'output_precision_dp' => ( is => 'rw', isa => 'Maybe[Int]', default => 2 );
-has 'output_type' =>
-  ( is => 'rw', isa => enum( [qw(wig bg)] ), default => 'wig' );
-has 'intermediate_files' => (
-    is      => 'rw',
-    isa     => enum( [qw(tmp fifo)] ),
-    default => 'fifo'
+
+has 'output_type' => (
+    is       => 'rw',
+    isa      => enum( [qw(wig bg)] ),
+    default  => 'wig',
+    required => 1,
 );
+
+has 'intermediate_files' => (
+    is       => 'rw',
+    isa      => enum( [qw(tmp fifo)] ),
+    default  => 'fifo',
+    required => 1,
+);
+
+has 'verbose'      => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'cleanup_temp' => ( is => 'rw', isa => 'Bool', default => 1 );
 
 no Moose::Util::TypeConstraints;
 
 #todo - check that you have sufficient information to run the process up front
 #todo - check that you can write to output location early
-#todo - mark required information in moose declarations
 #todo - can you apply this to paired end data?
-#todo - make fifos optional
 
 sub generate_track {
     my ($self) = @_;
@@ -134,6 +163,7 @@ sub generate_track {
                 die "Cannot fork: $!";
             }
             elsif ( $pid == 0 ) {
+
    #write intermediate data to fifos - process will block until there's a reader
                 $self->_split_by_dir_to_bed(@$_);
                 exit 0;
@@ -146,9 +176,9 @@ sub generate_track {
     }
     if ( $self->intermediate_files eq 'tmp' ) {
         $self->log("Passing intermediate data through tmp files");
-        
+
         for (@split_options) {
-          $self->log("Split alignment by dir",@$_);
+            $self->log( "Split alignment by dir", @$_ );
             $self->_split_by_dir_to_bed(@$_);
         }
         $self->log( 'Combine, extend and smooth all reads:', $combined_output );
@@ -339,8 +369,7 @@ sub _shift_size {
 
 sub _do_cleanup {
     my ( $self, $tmp_dir ) = @_;
-
-    remove_tree( $tmp_dir ) if ( $self->cleanup_temp );
+    remove_tree($tmp_dir) if ( $self->cleanup_temp );
 }
 
 sub _expectation_correction_factor {
@@ -353,7 +382,8 @@ sub _expectation_correction_factor {
     my $ec = ( ( $rc * $rl ) / $m );
 
     $self->log(
-"read_count: $rc read_length: $rl total_mappability: $m correction_factor: $ec"
+        "read_count:",        $rc, "read_length:",       $rl,
+        "total_mappability:", $m,  "correction_factor:", $ec
     );
 
     return $ec;
@@ -443,4 +473,5 @@ sub log {
     print STDERR join( ' ', @msg ) . "\n" if ( $self->verbose );
 }
 
+__PACKAGE__->meta->make_immutable;
 1;
