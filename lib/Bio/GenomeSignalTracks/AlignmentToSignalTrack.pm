@@ -1,3 +1,15 @@
+=head1 LICENSE
+   Copyright 2015 EMBL - European Bioinformatics Institute
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+     http://www.apache.org/licenses/LICENSE-2.0
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+=cut
 package Bio::GenomeSignalTracks::AlignmentToSignalTrack;
 
 use strict;
@@ -135,7 +147,9 @@ no Moose::Util::TypeConstraints;
 sub generate_track {
     my ($self) = @_;
 
-    my $tmp_dir = $self->temp_dir;
+    my $tmp     = File::Temp->newdir( $self->_temp_dir_options );
+    my $tmp_dir = $tmp->dirname;
+
     $self->log( 'Temp dir:', $tmp_dir );
     $self->_prep($tmp_dir);
     $self->log('Prep complete');
@@ -145,52 +159,73 @@ sub generate_track {
 
     my $combined_output = $self->_temp_output_location;
 
-    my @split_options = (
+    my $split_options = [
         [ '-F16', $fwd_scaled_output, '+' ],
         [ '-f16', $rev_scaled_output, '-' ],
-    );
+    ];
 
     if ( $self->intermediate_files eq 'fifo' ) {
-        $self->log("Passing intermediate data through fifos");
-        my $fifo_mode = 0600;
-        mkfifo( $fwd_scaled_output, $fifo_mode );
-        mkfifo( $rev_scaled_output, $fifo_mode );
-
-        for (@split_options) {
-            my $pid = fork;
-
-            if ( !defined $pid ) {
-                die "Cannot fork: $!";
-            }
-            elsif ( $pid == 0 ) {
-
-   #write intermediate data to fifos - process will block until there's a reader
-                $self->_split_by_dir_to_bed(@$_);
-                exit 0;
-            }
-        }
-
-        # this now reads from the FIFOs, unblocking their inputs
-        $self->_combine_extend_smooth( $combined_output, $fwd_scaled_output,
-            $rev_scaled_output );
+        $self->_run_with_fifos(
+            $fwd_scaled_output, $rev_scaled_output,
+            $split_options,     $combined_output
+        );
     }
-    if ( $self->intermediate_files eq 'tmp' ) {
-        $self->log("Passing intermediate data through tmp files");
 
-        for (@split_options) {
-            $self->log( "Split alignment by dir", @$_ );
-            $self->_split_by_dir_to_bed(@$_);
-        }
-        $self->log( 'Combine, extend and smooth all reads:', $combined_output );
-        $self->_combine_extend_smooth( $combined_output, $fwd_scaled_output,
-            $rev_scaled_output );
+    if ( $self->intermediate_files eq 'tmp' ) {
+        $self->_run_with_temp_files(
+            $fwd_scaled_output, $rev_scaled_output,
+            $split_options,     $combined_output
+        );
     }
 
     $self->log( 'Move output to final location:', $self->output_file_path );
     move( $combined_output, $self->output_file_path );
     $self->log( 'Output in', $self->output_file_path );
+}
 
-    $self->_do_cleanup($tmp_dir);
+sub _run_with_fifos {
+    my ( $self, $fwd_scaled_output, $rev_scaled_output, $split_options,
+        $combined_output )
+      = @_;
+
+    $self->log("Passing intermediate data through fifos");
+    my $fifo_mode = 0600;
+    mkfifo( $fwd_scaled_output, $fifo_mode );
+    mkfifo( $rev_scaled_output, $fifo_mode );
+
+    for (@$split_options) {
+        my $pid = fork;
+
+        if ( !defined $pid ) {
+            die "Cannot fork: $!";
+        }
+        elsif ( $pid == 0 ) {
+
+   #write intermediate data to fifos - process will block until there's a reader
+            $self->_split_by_dir_to_bed(@$_);
+            exit 0;
+        }
+    }
+
+    # this now reads from the FIFOs, unblocking their inputs
+    $self->_combine_extend_smooth( $combined_output, $fwd_scaled_output,
+        $rev_scaled_output );
+}
+
+sub _run_with_temp_files {
+    my ( $self, $fwd_scaled_output, $rev_scaled_output, $split_options,
+        $combined_output )
+      = @_;
+
+    $self->log("Passing intermediate data through tmp files");
+
+    for (@$split_options) {
+        $self->log( "Split alignment by dir", @$_ );
+        $self->_split_by_dir_to_bed(@$_);
+    }
+    $self->log( 'Combine, extend and smooth all reads:', $combined_output );
+    $self->_combine_extend_smooth( $combined_output, $fwd_scaled_output,
+        $rev_scaled_output );
 }
 
 sub _temp_output_location {
@@ -339,7 +374,7 @@ sub _create_chrom_bed_file {
     $self->do_system($cmd);
 }
 
-sub temp_dir {
+sub _temp_dir_options {
     my ($self) = @_;
 
     my %opts = ( CLEANUP => $self->cleanup_temp );
@@ -352,7 +387,7 @@ sub temp_dir {
         $self->log("Temp dir will not be cleaned up at program exit");
     }
 
-    return tempdir(%opts);
+    return %opts;
 }
 
 sub _extend_length {
@@ -365,11 +400,6 @@ sub _shift_size {
     my ($self) = @_;
 
     return int( $self->fragment_length / 2 );
-}
-
-sub _do_cleanup {
-    my ( $self, $tmp_dir ) = @_;
-    remove_tree($tmp_dir) if ( $self->cleanup_temp );
 }
 
 sub _expectation_correction_factor {
@@ -389,55 +419,19 @@ sub _expectation_correction_factor {
     return $ec;
 }
 
-sub _load_bed_chrom_lengths {
-    my ($self) = @_;
-
-    my %c;
-    open my $fh, '<', $self->chrom_sizes_bed_file_path;
-    while (<$fh>) {
-        next if m/^#/;
-        chomp;
-        my ( $seq, $start, $end ) = split /\t/;
-
-        $c{$seq} = $end;
-    }
-    close $fh;
-
-    return \%c;
-}
-
 sub _prep {
     my ( $self, $tmp_dir ) = @_;
 
     if ( $self->mappability_auc_file_path && !$self->mappability_auc ) {
-        $self->log(
-            'Getting mappability AUC from file:',
-            $self->mappability_auc_file_path
-        );
-        my $mappability =
-          capture( 'head -1 ' . $self->mappability_auc_file_path );
-        chomp $mappability;
-        $self->mappability_auc($mappability);
+        $self->_read_auc_from_file;
     }
 
     if ( !$self->mappability_auc && $self->mappability_file_path ) {
-        $self->log( 'Calculating mappability AUC from mappability file:',
-            $self->mappability_file_path );
-        my $mappability = capture(
-            $self->wiggletools_path . ' AUC ' . $self->mappability_file_path );
-        chomp $mappability;
-        $self->mappability_file_path($mappability);
+        $self->_calc_auc_from_mappability_file;
     }
 
     if ( !$self->read_count ) {
-        $self->log( 'Getting read count from alignment',
-            $self->alignment_file_path );
-        my $read_count =
-          capture( $self->samtools_path
-              . ' view -c -F4 '
-              . $self->alignment_file_path );
-        chomp $read_count;
-        $self->read_count($read_count);
+        $self->_get_read_count;
     }
 
     if ( !$self->smooth_length ) {
@@ -453,18 +447,56 @@ sub _prep {
     }
 
     if ( !$self->read_length ) {
-        $self->log( 'Getting read length from first read in alignment:',
-            $self->alignment_file_path );
-        my $cmd = join( ' ',
-            $self->samtools_path, 'view', $self->alignment_file_path, '|',
-            'head -1', '|', 'cut -f10' );
-        my $first_read = capture($cmd);
-
-        chomp($first_read);
-        $self->log( 'First read length:',
-            length($first_read), '(', $first_read, ')' );
-        $self->read_length( length($first_read) );
+        $self->_get_read_length;
     }
+}
+
+sub _read_auc_from_file {
+    my ($self) = @_;
+    $self->log(
+        'Getting mappability AUC from file:',
+        $self->mappability_auc_file_path
+    );
+    my $mappability = capture( 'head -1 ' . $self->mappability_auc_file_path );
+    chomp $mappability;
+    $self->mappability_auc($mappability);
+}
+
+sub _calc_auc_from_mappability_file {
+    my ($self) = @_;
+    $self->log( 'Calculating mappability AUC from mappability file:',
+        $self->mappability_file_path );
+    my $mappability = capture(
+        $self->wiggletools_path . ' AUC ' . $self->mappability_file_path );
+    chomp $mappability;
+    $self->mappability_file_path($mappability);
+}
+
+sub _get_read_count {
+    my ($self) = @_;
+
+    $self->log( 'Getting read count from alignment',
+        $self->alignment_file_path );
+    my $read_count =
+      capture(
+        $self->samtools_path . ' view -c -F4 ' . $self->alignment_file_path );
+    chomp $read_count;
+    $self->read_count($read_count);
+}
+
+sub _get_read_length {
+    my ($self) = @_;
+    $self->log( 'Getting read length from first read in alignment:',
+        $self->alignment_file_path );
+    my $cmd = join( ' ',
+        $self->samtools_path, 'view', $self->alignment_file_path, '|',
+        'head -1', '|', 'cut -f10' );
+    my $first_read = capture($cmd);
+
+    chomp($first_read);
+    $self->log( 'First read length:',
+        length($first_read), '(', $first_read, ')' );
+    $self->read_length( length($first_read) );
 }
 
 sub log {
