@@ -51,17 +51,17 @@ AlignmentToSignalTrack - Convert an aligmment to a normalized signal track
 =cut
 
 use strict;
+use namespace::autoclean;
 use Moose;
-use Carp;
-use File::Path qw(remove_tree);
+use Carp qw(croak);
 use File::Temp qw(tempdir);
 use File::Copy qw(move);
 use File::Basename qw(fileparse);
 use IPC::System::Simple qw(system capture);
 use POSIX qw(mkfifo);
-use autodie;
+use autodie qw(open close);
+
 use Moose::Util::TypeConstraints;
-use namespace::autoclean;
 
 subtype 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt',
   as 'Int',
