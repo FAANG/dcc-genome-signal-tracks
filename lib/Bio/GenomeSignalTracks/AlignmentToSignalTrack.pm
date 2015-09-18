@@ -1,3 +1,4 @@
+
 =head1 LICENSE
 
    Copyright 2015 EMBL - European Bioinformatics Institute
@@ -12,6 +13,7 @@
    limitations under the License.
 
 =cut
+
 package Bio::GenomeSignalTracks::AlignmentToSignalTrack;
 
 =head1 NAME
@@ -33,12 +35,18 @@ AlignmentToSignalTrack - Convert an aligmment to a normalized signal track
       output_file_path => '/path/to/output.wig',
     );
 
+    $a2s->generate_track();
+
 =head1 Description
 
     This module converts alignments to signal tracks, normalized by read count
     and mappability. It relies on the samtools, bedtools and wiggletools
 
-    The input is a coordinate sorted BAM file.
+    It is inspired by Anshul Kundaje's wiggler/align2rawsignal software
+      * https://code.google.com/p/align2rawsignal/
+      * https://sites.google.com/site/anshulkundaje/projects/wiggler
+
+    The input is a BAM file and a mappability track.  
 
 =cut
 
@@ -76,34 +84,38 @@ subtype 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
 
 =head1 Attributes
 
-
 =head2 samtools_path
 
     path to the samtools executable. Required
 
 =cut
+
 has 'samtools_path' => (
     is => 'rw',
     isa =>
       'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
     required => 1,
 );
+
 =head2 wiggletools_path
 
     path to the wiggletools executable. Required. 
 
 =cut
+
 has 'wiggletools_path' => (
     is => 'rw',
     isa =>
       'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
     required => 1,
 );
+
 =head2 bedtools_path
 
     path to the bedtools executable. Required. 
 
 =cut
+
 has 'bedtools_path' => (
     is => 'rw',
     isa =>
@@ -111,16 +123,15 @@ has 'bedtools_path' => (
     required => 1,
 );
 
-=head2 chrom_sizes_bed_file_path
+=head2 _chrom_sizes_bed_file_path
 
-    path to a bed file listing all chromosomes that you wish to use in your 
-    output, with a score of 1. This is used to prevent the output exceeding the
-    chromsome length. Any regions not covered in this file will be excluded
-    from the output. This will be created from the alignment file header if not
-    provided.
+    path to a bed file listing all chromosomes in the alignment header. This is
+    used to prevent the output exceeding the chromsome length. This will be 
+    created from the alignment file header, there is no need to provide it.
 
 =cut
-has 'chrom_sizes_bed_file_path' => (
+
+has '_chrom_sizes_bed_file_path' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable'
 );
@@ -135,6 +146,7 @@ has 'chrom_sizes_bed_file_path' => (
     https://github.com/FAANG/genome-signal-tracks
 
 =cut
+
 has 'mappability_file_path' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
@@ -148,6 +160,7 @@ has 'mappability_file_path' => (
     or calculated from the mappabilty files with wiggletools AUC.
 
 =cut
+
 has 'mappability_auc' => ( is => 'rw', isa => 'Num' );
 
 =head2 mappability_auc_file_path
@@ -157,6 +170,7 @@ has 'mappability_auc' => ( is => 'rw', isa => 'Num' );
     https://github.com/FAANG/reference_data_builder
 
 =cut
+
 has 'mappability_auc_file_path' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
@@ -205,7 +219,7 @@ has 'output_file_path' => ( is => 'rw', isa => 'Str', required => 1, );
 has 'read_count' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt'
-);    
+);
 
 =head2 read_length
 
@@ -217,7 +231,7 @@ has 'read_count' => (
 has 'read_length' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt'
-);    
+);
 
 =head2 working_dir
 
@@ -265,9 +279,9 @@ has 'exclude_regions_file_path' => (
     sort everything.    
 
 =cut
-has 'force_lexographic_sort' =>
-  ( is => 'rw', isa => 'Bool', default => 1,);
-  
+
+has 'force_lexographic_sort' => ( is => 'rw', isa => 'Bool', default => 1, );
+
 =head2 output_precision_dp
   
     wiggletools output is post-processed to remove negative 0 values, and to
@@ -275,7 +289,13 @@ has 'force_lexographic_sort' =>
     places to include in the output.
   
 =cut  
-has 'output_precision_dp' => ( is => 'rw', isa => 'Maybe[Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt]', default => 2 );
+
+has 'output_precision_dp' => (
+    is => 'rw',
+    isa =>
+      'Maybe[Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt]',
+    default => 2
+);
 
 =head2 output_type
   
@@ -283,24 +303,27 @@ has 'output_precision_dp' => ( is => 'rw', isa => 'Maybe[Bio::GenomeSignalTracks
     to wig.
   
 =cut  
+
 has 'output_type' => (
     is       => 'rw',
     isa      => enum( [qw(wig bg)] ),
     default  => 'wig',
     required => 1,
 );
+
 =head2 intermediate_files
   
     Should intermediate files be named pipes (fifo) or temporary (tmp) files? 
     Named pipes should use less temp space where a sort is not required, with
     increased RAM use, as more processes run concurrently.
 
-    Required, default is tmp.
+    Required, default is auto - will use tmp if a lexographic sort is required.
   
 =cut  
+
 has 'intermediate_files' => (
     is       => 'rw',
-    isa      => enum( [qw(tmp fifo)] ),
+    isa      => enum( [qw(tmp fifo auto)] ),
     default  => 'tmp',
     required => 1,
 );
@@ -313,7 +336,7 @@ has 'intermediate_files' => (
   
 =cut  
 
-has 'verbose'      => ( is => 'rw', isa => 'Bool', default => 1 );
+has 'verbose' => ( is => 'rw', isa => 'Bool', default => 1 );
 
 =head2 cleanup_temp
   
@@ -331,27 +354,21 @@ no Moose::Util::TypeConstraints;
 #todo - check that you can write to output location early
 #todo - can you apply this to paired end data?
 #todo - documentation
-#todo - can we automatically decide wether or not to use lexographic sorting?
 #todo - do we need to force sort collate locale to C ?
 
 =head1 Methods
 
-=head2 check_requirements
-
- croak if we don't have enough information to proceed.
- 
- only used for things that can't be managed through moose settings.
-
-=cut
-sub check_requirements {
-  my ($self) = @_;
-  #TODO
+=head2 generate_track
   
-}
+  Create a normalized signal track, based on the aligment file.
+  
+=cut
 
 sub generate_track {
     my ($self) = @_;
-    $self->check_requirements;
+
+    $self->_check_requirements;
+
     my $tmp     = File::Temp->newdir( $self->_temp_dir_options );
     my $tmp_dir = $tmp->dirname;
 
@@ -362,7 +379,7 @@ sub generate_track {
     my $fwd_scaled_output = $tmp_dir . '/fwd.scaled.shifted.bg';
     my $rev_scaled_output = $tmp_dir . '/rev.scaled.shifted.bg';
 
-    my $combined_output = $self->_temp_output_location;
+    my $combined_output = $tmp_dir . '/combined.out';
 
     my $split_options = [
         [ '-F16', $fwd_scaled_output, '+' ],
@@ -387,6 +404,149 @@ sub generate_track {
     move( $combined_output, $self->output_file_path );
     $self->log( 'Output in', $self->output_file_path );
 }
+
+=head2 _check_requirements
+
+ croak if we don't have enough information to proceed.
+ 
+ only used for things that can't be managed through Moose settings.
+
+=cut
+
+sub _check_requirements {
+    my ($self) = @_;
+
+    #can we write to the output file? - autodie will croak for us if this fails.
+    open( my $fh, '>', $self->output_file_path );
+    close($fh);
+
+    if ( $self->mappability_file_path ) {
+        my $suffix = $self->_suffix( $self->mappability_file_path );
+        croak(
+"Mappability file must be wiggle (wig), bedGraph (bg) or bigWig file, but suffix is "
+              . $suffix )
+          if ( $suffix ne 'wig' && $suffix ne 'bg' && $suffix ne 'bw' );
+    }
+
+    if ( $self->exclude_regions_file_path ) {
+        my $suffix = $self->_suffix( $self->exclude_regions_file_path );
+        croak( "Excluded regions file must be in bed format but suffix is "
+              . $suffix )
+          if ( $suffix ne 'bed' );
+    }
+
+    if ( $self->alignment_file_path ) {
+        my $suffix = $self->_suffix( $self->alignment_file_path );
+        croak( "Alignment file should be .bam, .cram or .sam, but suffix is "
+              . $suffix )
+          if ( $suffix ne 'bam' && $suffix ne 'cram' && $suffix ne 'sam' );
+    }
+}
+
+=head2 _suffix  
+
+    returns the suffix from a file name
+
+=cut
+
+sub _suffix {
+    my ( $self, $fn ) = @_;
+
+    my ($suffix) = reverse split /\./, $fn;
+    
+    return $suffix;
+}
+
+=head2 _is_sort_required
+
+  We don't need to sort the aligment if the file is coordinate sorted and the
+  reference sequences are already in lexographic order.
+  
+  params - sort order (scalar), list of reference sequence names (array ref)
+
+=cut
+
+sub _is_sort_required {
+    my ( $self, $so, $sqs ) = @_;
+
+    my $lex_order = $self->_is_list_in_lex_order($sqs) || 0;
+    $self->log( "Sort order:",               $so );
+    $self->log( "SQs in lexographic order:", $lex_order );
+    if ( $so eq 'coordinate' && $lex_order ) {
+        $self->log("Sort is not necessary");
+        return 0;
+    }
+    else {
+        $self->log("Sort is necessary");
+        return 1;
+    }
+
+}
+
+=head2 _is_list_in_lex_order
+
+  Returns true if the first arg (an array ref) is already in the order produced by sort {$a cmp $b}
+  
+=cut
+
+sub _is_list_in_lex_order {
+    my ( $self, $sqs ) = @_;
+
+    my @sorted_copy = sort { $a cmp $b } @$sqs;
+
+    my $order_match = 1;
+    for ( my $i = 0 ; $order_match && $i < scalar(@sorted_copy) ; $i++ ) {
+        $order_match = ( $sorted_copy[$i] eq $sqs->[$i] );
+    }
+
+    return $order_match;
+}
+
+=head2 _parse_header
+
+    Parse the alignment header for the sort order and reference sequence information
+
+    Returns (sort order, array ref to sequence names, hash ref to sequence names and their lengths)
+
+=cut
+
+sub _parse_header {
+    my ($self) = @_;
+
+    my $so;
+    my @sqs;
+    my %sq_lengths;
+    my $cmd = join( ' ',
+        $self->samtools_path, 'view', '-H', $self->alignment_file_path );
+    open( my $aligment_header_fh, '-|', $cmd );
+    while (<$aligment_header_fh>) {
+        chomp;
+        my @tokens = split /\t/;
+        if ( scalar(@tokens) && $tokens[0] eq '@HD' ) {
+            ($so) = grep { /^SO:/ } @tokens;
+            $so =~ s/^SO://;
+        }
+        if ( scalar(@tokens) && $tokens[0] eq '@SQ' ) {
+            my ($sn) = grep { /^SN:/ } @tokens;
+            my ($ln) = grep { /^LN:/ } @tokens;
+            $sn =~ s/^SN://;
+            $ln =~ s/^LN://;
+
+            push @sqs, $sn;
+            $sq_lengths{$sn} = $ln;
+        }
+    }
+
+    close($aligment_header_fh);
+
+    return ( $so, \@sqs, \%sq_lengths );
+}
+
+=head2 _run_with_fifos
+
+  Generate the track using named pipe intermediate files
+  
+=cut
 
 sub _run_with_fifos {
     my ( $self, $fwd_scaled_output, $rev_scaled_output, $split_options,
@@ -417,6 +577,12 @@ sub _run_with_fifos {
         $rev_scaled_output );
 }
 
+=head2 _run_with_temp_files
+
+  Generate the track using temporary intermediate files
+  
+=cut
+
 sub _run_with_temp_files {
     my ( $self, $fwd_scaled_output, $rev_scaled_output, $split_options,
         $combined_output )
@@ -433,17 +599,16 @@ sub _run_with_temp_files {
         $rev_scaled_output );
 }
 
-sub _temp_output_location {
-    my ($self) = @_;
+=head2 _split_by_dir_to_bed
 
-    my ( $name, $path ) = fileparse( $self->output_file_path );
-    my $temp_output_location = $path . '.' . $name;
+    Take reads from one strand of the alignment, generate normalized signal for
+    it, shifted based on the fragment length.
 
-    $self->log( 'Using temp location for final output', $temp_output_location );
+    Depending on the settings, it can also exclude reads based on the file exclude_regions_file_path.
 
-    return $temp_output_location;
+    Data will be sorted lexographically if force_lexographic_sort is set.
 
-}
+=cut
 
 sub _split_by_dir_to_bed {
     my ( $self, $samtools_filter, $target, $shift_op, ) = @_;
@@ -487,29 +652,45 @@ sub _split_by_dir_to_bed {
 
     my $cmd = join( ' ', @cmd );
 
-    $self->do_system($cmd);
+    $self->_do_system($cmd);
 }
 
-sub do_system {
+=head2 _do_system 
+  
+    Run a command through system, wrapped up to use bash and the pipefail option
+
+=cut
+
+sub _do_system {
     my ( $self, $cmd ) = @_;
     $self->log( "executing", $cmd );
-    system($cmd);
+
+    system( 'bash', '-o', 'pipefail', '-c', $cmd );
 }
+
+=head2 _combine_extend_smooth 
+  
+    Combine data from multiple files, while extending and smoothing it.
+    Data is post-processed 
+
+    params - target file name, list of files to combine
+  
+=cut
 
 sub _combine_extend_smooth {
     my ( $self, $target, @files ) = @_;
 
-    my $output_cmd = 'write_bg';
-    if ( $self->output_type eq 'wig' ) {
-        $output_cmd = 'write';
+    my $output_cmd = 'write';
+    if ( $self->output_type eq 'bg' ) {
+        $output_cmd = 'write_bg';
     }
 
     my $cmd = join( ' ',
-        $self->wiggletools_path,          $output_cmd,
-        '-',                              'mult strict',
-        $self->chrom_sizes_bed_file_path, 'smooth',
-        $self->smooth_length,             'extend',
-        $self->_extend_length,            'sum',
+        $self->wiggletools_path,           $output_cmd,
+        '-',                               'mult strict',
+        $self->_chrom_sizes_bed_file_path, 'smooth',
+        $self->smooth_length,              'extend',
+        $self->_extend_length,             'sum',
         @files, );
 
     open( my $in_fh,  '-|', $cmd );
@@ -527,17 +708,17 @@ sub _combine_extend_smooth {
         if ( scalar(@vals) == 4 ) {
 
             #bedgraph format
-            $vals[3] = $self->post_process_score( $vals[3] );
+            $vals[3] = $self->_post_process_score( $vals[3] );
         }
         if ( scalar(@vals) == 2 ) {
 
             #variableStep format
-            $vals[1] = $self->post_process_score( $vals[1] );
+            $vals[1] = $self->_post_process_score( $vals[1] );
         }
         if ( scalar(@vals) == 1 ) {
 
             #fixedStep format
-            $vals[0] = $self->post_process_score( $vals[0] );
+            $vals[0] = $self->_post_process_score( $vals[0] );
         }
 
         print $out_fh join( "\t", @vals ) . "\n";
@@ -547,7 +728,14 @@ sub _combine_extend_smooth {
     close($out_fh);
 }
 
-sub post_process_score {
+=head2 _post_process_score
+
+    Replace -0.00000 with 0.
+    If output_precision_dp is set, round the scores down to that many decimal points
+
+=cut
+
+sub _post_process_score {
     my ( $self, $score ) = @_;
 
     if ( $score =~ m/^-0.00000/ ) {
@@ -559,25 +747,32 @@ sub post_process_score {
     return $score;
 }
 
+=head2 _create_chrom_bed_file
+  
+    Create a bed file, based on a hash listing reference sequences and their
+    lengths
+
+=cut
+
 sub _create_chrom_bed_file {
-    my ( $self, $target ) = @_;
+    my ( $self, $target, $sq_lengths ) = @_;
 
-    my @cmd = (
-        $self->samtools_path, 'view',
-        '-H',                 $self->alignment_file_path,
-        '|',                  'grep @SQ',
-        '|',                  'cut -f2,3',
-        '|',                  "sed 's/[SL]N://g'",
-        '|',                  'awk',
-        '-F $\'\t\'',         "'BEGIN{OFS=FS}{print \$1,0,\$2,1}'",
-    );
+    open( my $fh, '>', $target );
 
-    push @cmd, '|', 'sort -k1,1 -k2,2n' if ( $self->force_lexographic_sort );
-    push @cmd, '>', $target;
-    my $cmd = join( ' ', @cmd );
+    for my $sq ( sort keys %$sq_lengths ) {
+        my $length = $sq_lengths->{$sq};
 
-    $self->do_system($cmd);
+        print $fh join( "\t", $sq, 0, $length, 1 ) . "\n";
+    }
+
+    close $fh;
 }
+
+=head2 _temp_dir_options
+  
+    Provide options hash for creating a temp dir
+
+=cut
 
 sub _temp_dir_options {
     my ($self) = @_;
@@ -595,17 +790,37 @@ sub _temp_dir_options {
     return %opts;
 }
 
+=head2 _extend_length
+  
+    By how many base pairs should reads be extended? 
+    Calculated as (fragment_length - read_length)/2, rounded down.
+
+=cut
+
 sub _extend_length {
     my ($self) = @_;
 
     return int( ( $self->fragment_length - $self->read_length ) / 2 );
 }
 
+=head2 _shift_size
+  
+    By how many base pairs should reads be shifted? 
+    Calculated as fragment_length/2, rounded down.
+
+=cut
+
 sub _shift_size {
     my ($self) = @_;
 
     return int( $self->fragment_length / 2 );
 }
+
+=head2 _expectation_correction_factor
+  
+    Factor for normalizing signal, based on how much of the genome is mappable, how many reads you have, and how long they are.
+
+=cut
 
 sub _expectation_correction_factor {
     my ($self) = @_;
@@ -624,8 +839,34 @@ sub _expectation_correction_factor {
     return $ec;
 }
 
+=head2 _prep
+  
+    Prepare for generating a track
+
+=cut
+
 sub _prep {
     my ( $self, $tmp_dir ) = @_;
+
+    my ( $sort_order, $sqs, $sq_lengths ) = $self->_parse_header;
+
+    my $sort_required = $self->_is_sort_required( $sort_order, $sqs );
+
+    if ($sort_required) {
+        $self->log('Will sort input data');
+        $self->force_lexographic_sort(1);
+    }
+
+    if ( $self->intermediate_files eq 'auto' ) {
+        if ( $self->force_lexographic_sort ) {
+            $self->intermediate_files('tmp');
+        }
+        else {
+            $self->intermediate_files('fifo');
+        }
+        $self->log( 'Will use', $self->intermediate_files,
+            'intermediate files' );
+    }
 
     if ( $self->mappability_auc_file_path && !$self->mappability_auc ) {
         $self->_read_auc_from_file;
@@ -644,17 +885,21 @@ sub _prep {
         $self->smooth_length( $self->fragment_length );
     }
 
-    if ( !$self->chrom_sizes_bed_file_path ) {
-        my $chroms = $tmp_dir . '/chroms.bed';
-        $self->log( 'Creating chroms file:', $chroms );
-        $self->_create_chrom_bed_file($chroms);
-        $self->chrom_sizes_bed_file_path($chroms);
-    }
-
     if ( !$self->read_length ) {
         $self->_get_read_length;
     }
+
+    my $chroms = $tmp_dir . '/chroms.bed';
+    $self->log( 'Creating chroms file:', $chroms );
+    $self->_create_chrom_bed_file( $chroms, $sq_lengths );
+    $self->_chrom_sizes_bed_file_path($chroms);
 }
+
+=head2 _read_auc_from_file 
+
+  get the mappabilty AUC from a value stored in a file
+
+=cut
 
 sub _read_auc_from_file {
     my ($self) = @_;
@@ -667,6 +912,12 @@ sub _read_auc_from_file {
     $self->mappability_auc($mappability);
 }
 
+=head2 _calc_auc_from_mappability_file 
+
+    Calculate the mappability AUC with wiggletools.
+
+=cut
+
 sub _calc_auc_from_mappability_file {
     my ($self) = @_;
     $self->log( 'Calculating mappability AUC from mappability file:',
@@ -676,6 +927,12 @@ sub _calc_auc_from_mappability_file {
     chomp $mappability;
     $self->mappability_file_path($mappability);
 }
+
+=head2 _get_read_count 
+
+    Get the number of mapped reads from the alignment with samtools
+
+=cut
 
 sub _get_read_count {
     my ($self) = @_;
@@ -688,6 +945,12 @@ sub _get_read_count {
     chomp $read_count;
     $self->read_count($read_count);
 }
+
+=head2 _get_read_length
+
+    Get the first read with samtools and return it's length
+
+=cut
 
 sub _get_read_length {
     my ($self) = @_;
@@ -703,6 +966,12 @@ sub _get_read_length {
         length($first_read), '(', $first_read, ')' );
     $self->read_length( length($first_read) );
 }
+
+=head2 log
+
+    If verbose is true, join the arguments and print to STDERR
+
+=cut
 
 sub log {
     my ( $self, @msg ) = @_;
