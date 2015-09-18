@@ -1,4 +1,5 @@
 =head1 LICENSE
+
    Copyright 2015 EMBL - European Bioinformatics Institute
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -9,8 +10,37 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
 =cut
 package Bio::GenomeSignalTracks::AlignmentToSignalTrack;
+
+=head1 NAME
+
+AlignmentToSignalTrack - Convert an aligmment to a normalized signal track
+
+=head1 SYNOPSIS
+
+    use Bio::GenomeSignalTracks::AlignmentToSignalTrack;
+
+    my $a2s = Bio::GenomeSignalTracks::AlignmentToSignalTrack->new(
+      samtools_path => '/path/to/samtools',
+      bedtools_path => '/path/to/bedtools',
+      wiggletools_path => '/path/to/wiggletools',
+      mappability_file_path => '/path/to/mappability.bw',
+      exclude_regions_file_path => '/path/to/regions_to_ignore.bed',
+      alignment_file_path => '/path/to/alignment.bam',
+      fragment_length => 200,
+      output_file_path => '/path/to/output.wig',
+    );
+
+=head1 Description
+
+    This module converts alignments to signal tracks, normalized by read count
+    and mappability. It relies on the samtools, bedtools and wiggletools
+
+    The input is a coordinate sorted BAM file.
+
+=cut
 
 use strict;
 use Moose;
@@ -44,19 +74,36 @@ subtype 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
     message    => 'File path must exist and be executable'
   };
 
-#executable paths, all requried
+=head1 Attributes
+
+
+=head2 samtools_path
+
+    path to the samtools executable. Required
+
+=cut
 has 'samtools_path' => (
     is => 'rw',
     isa =>
       'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
     required => 1,
 );
+=head2 wiggletools_path
+
+    path to the wiggletools executable. Required. 
+
+=cut
 has 'wiggletools_path' => (
     is => 'rw',
     isa =>
       'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Executable',
     required => 1,
 );
+=head2 bedtools_path
+
+    path to the bedtools executable. Required. 
+
+=cut
 has 'bedtools_path' => (
     is => 'rw',
     isa =>
@@ -64,78 +111,218 @@ has 'bedtools_path' => (
     required => 1,
 );
 
-# chrom sizes bed file, will be created from the bam if not otherwise present
+=head2 chrom_sizes_bed_file_path
+
+    path to a bed file listing all chromosomes that you wish to use in your 
+    output, with a score of 1. This is used to prevent the output exceeding the
+    chromsome length. Any regions not covered in this file will be excluded
+    from the output. This will be created from the alignment file header if not
+    provided.
+
+=cut
 has 'chrom_sizes_bed_file_path' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable'
 );
 
-#
+=head2 mappability_file_path
+
+    path to a signal track listing mappability scores. This should be in a 
+    format wiggletools can read (we use bigwig). The signal values will be
+    divided by this value (hard to map regions have their score 
+    increased). We have tested this with a score range of 0-1, tracks 
+    produced with https://github.com/FAANG/reference_data_builder or
+    https://github.com/FAANG/genome-signal-tracks
+
+=cut
 has 'mappability_file_path' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
     required => 1,
 );
+
+=head2 mappability_auc
+
+    total mappable area in the mappability file. This is used to normalise the
+    signal. If not provided, it will be read from mappability_auc_file_path, 
+    or calculated from the mappabilty files with wiggletools AUC.
+
+=cut
 has 'mappability_auc' => ( is => 'rw', isa => 'Num' );
+
+=head2 mappability_auc_file_path
+
+    Source for the mappability_auc value. Should be a single numeric value in
+    the first line. These files are routinely produced by the pipeline
+    https://github.com/FAANG/reference_data_builder
+
+=cut
 has 'mappability_auc_file_path' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
 );
 
-# required
+=head2 fragment_length
+
+    Reads are shifted by half the fragment length when producing signal data.
+    Required.
+
+=cut
 
 has 'fragment_length' => (
     is       => 'rw',
     isa      => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt',
     required => 1,
 );
+
+=head2 alignment_file_path
+
+    Path to the source alignment file. Must be coordinate sorted, with a header. Tested with BAM, but SAM or CRAM should also work, depending on your version of samtools. Required. 
+
+=cut
+
 has 'alignment_file_path' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable',
     required => 1,
 );
+
+=head2 output_file_path
+
+    Target output destination. Required. 
+
+=cut
+
 has 'output_file_path' => ( is => 'rw', isa => 'Str', required => 1, );
 
-# optional
+=head2 read_count
+
+    Number of reads in alignment. Used when normalising the signal. 
+    This will be calculated from the alignment if not provided.  
+
+=cut
+
 has 'read_count' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt'
-);    #will be calculated with samtools if necessary
+);    
+
+=head2 read_length
+
+    Read length is used when normalising the signal. Will be calculated  
+    from the first read if not provided.
+
+=cut
+
 has 'read_length' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt'
-);    # will calculate from the first read if not specified
-has 'working_dir' => ( is => 'rw', isa => 'Maybe[Str]' )
-  ;    #will use default temp folder if not specificed
+);    
+
+=head2 working_dir
+
+    The module creates a temp directory for intermediate files, using 
+    File::Temp. If set, the temp directory will be created within the
+    working_dir.
+
+=cut
+
+has 'working_dir' => ( is => 'rw', isa => 'Maybe[Str]' );
+
+=head2 smooth_length
+
+    Signal track output is smoothed by this value, using wiggletools. If not
+    provided, the fragment_length is used.
+
+=cut
+
 has 'smooth_length' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt'
-);     #will default to fragment length
+);
+
+=head2 exclude_regions_file_path
+
+    Path to a bed file containing regions to exclude. To emulate 
+    align2rawsignal, use the set of regions where mappability is less than 0.25
+    
+    These files are created by the pipeline https://github.com/FAANG/reference_data_builder
+
+=cut
 
 has 'exclude_regions_file_path' => (
     is  => 'rw',
     isa => 'Bio::GenomeSignalTracks::AlignmentToSignalTrack::FilePath_Readable'
 );
 
-has 'force_lexographic_sort' =>
-  ( is => 'rw', isa => 'Bool', default => 1, required => 1, );
-has 'output_precision_dp' => ( is => 'rw', isa => 'Maybe[Int]', default => 2 );
+=head2 force_lexographic_sort
 
+    wiggletools requires input to be lexicographically sorted. We can guarantee
+    this by running everything through sort -k1,1 -k2,2n, and will attempt to 
+    do this if the alignment chromosomes are not in the required order. 
+
+    If force_lexographic_sort is true, we skip trying to work it out and just
+    sort everything.    
+
+=cut
+has 'force_lexographic_sort' =>
+  ( is => 'rw', isa => 'Bool', default => 1,);
+  
+=head2 output_precision_dp
+  
+    wiggletools output is post-processed to remove negative 0 values, and to
+    control the precision of the output. If set, this controls how many decimal
+    places to include in the output.
+  
+=cut  
+has 'output_precision_dp' => ( is => 'rw', isa => 'Maybe[Bio::GenomeSignalTracks::AlignmentToSignalTrack::PositiveInt]', default => 2 );
+
+=head2 output_type
+  
+    output format. can be wig (wiggle) or bg (bedgraph). Required, defaults 
+    to wig.
+  
+=cut  
 has 'output_type' => (
     is       => 'rw',
     isa      => enum( [qw(wig bg)] ),
     default  => 'wig',
     required => 1,
 );
+=head2 intermediate_files
+  
+    Should intermediate files be named pipes (fifo) or temporary (tmp) files? 
+    Named pipes should use less temp space where a sort is not required, with
+    increased RAM use, as more processes run concurrently.
 
+    Required, default is tmp.
+  
+=cut  
 has 'intermediate_files' => (
     is       => 'rw',
     isa      => enum( [qw(tmp fifo)] ),
-    default  => 'fifo',
+    default  => 'tmp',
     required => 1,
 );
 
+=head2 verbose
+  
+    When true, the module will spam STDERR with logging information.
+
+    Required, defaults to true.
+  
+=cut  
+
 has 'verbose'      => ( is => 'rw', isa => 'Bool', default => 1 );
+
+=head2 cleanup_temp
+  
+    Is the temp directory deleted when the program exits?
+
+    Required, defaults to true.
+  
+=cut
+
 has 'cleanup_temp' => ( is => 'rw', isa => 'Bool', default => 1 );
 
 no Moose::Util::TypeConstraints;
@@ -143,10 +330,28 @@ no Moose::Util::TypeConstraints;
 #todo - check that you have sufficient information to run the process up front
 #todo - check that you can write to output location early
 #todo - can you apply this to paired end data?
+#todo - documentation
+#todo - can we automatically decide wether or not to use lexographic sorting?
+#todo - do we need to force sort collate locale to C ?
+
+=head1 Methods
+
+=head2 check_requirements
+
+ croak if we don't have enough information to proceed.
+ 
+ only used for things that can't be managed through moose settings.
+
+=cut
+sub check_requirements {
+  my ($self) = @_;
+  #TODO
+  
+}
 
 sub generate_track {
     my ($self) = @_;
-
+    $self->check_requirements;
     my $tmp     = File::Temp->newdir( $self->_temp_dir_options );
     my $tmp_dir = $tmp->dirname;
 
