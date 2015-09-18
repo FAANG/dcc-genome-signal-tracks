@@ -273,14 +273,14 @@ has 'exclude_regions_file_path' => (
 
     wiggletools requires input to be lexicographically sorted. We can guarantee
     this by running everything through sort -k1,1 -k2,2n, and will attempt to 
-    do this if the alignment chromosomes are not in the required order. 
+    do this if the alignment chromosomes are not in the required order, or the
+    alignment is not coordinate sorted.
 
-    If force_lexographic_sort is true, we skip trying to work it out and just
-    sort everything.    
+    If force_lexographic_sort is true, we sort everything regardless.    
 
 =cut
 
-has 'force_lexographic_sort' => ( is => 'rw', isa => 'Bool', default => 1, );
+has 'force_lexographic_sort' => ( is => 'rw', isa => 'Bool', default => 0, );
 
 =head2 output_precision_dp
   
@@ -453,7 +453,7 @@ sub _suffix {
     my ( $self, $fn ) = @_;
 
     my ($suffix) = reverse split /\./, $fn;
-    
+
     return $suffix;
 }
 
@@ -850,9 +850,9 @@ sub _prep {
 
     my ( $sort_order, $sqs, $sq_lengths ) = $self->_parse_header;
 
-    my $sort_required = $self->_is_sort_required( $sort_order, $sqs );
-
-    if ($sort_required) {
+    if (  !$self->force_lexographic_sort
+        && $self->_is_sort_required( $sort_order, $sqs ) )
+    {
         $self->log('Will sort input data');
         $self->force_lexographic_sort(1);
     }
